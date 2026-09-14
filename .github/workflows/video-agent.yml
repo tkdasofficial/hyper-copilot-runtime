@@ -15,18 +15,21 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      # Pixazo AI powers scene images ONLY (it has no TTS API).
-      PIXAZO_API_KEY: ${{ secrets.PIXAZO_API_KEY }}
-      # Optional overrides; defaults are https://api.pixazo.ai + free-tier model.
-      PIXAZO_BASE_URL: ${{ secrets.PIXAZO_BASE_URL }}
-      PIXAZO_IMAGE_MODEL: ${{ secrets.PIXAZO_IMAGE_MODEL }}
-      # Cloudflare Workers AI: script + scene prompts, narration TTS, image fallback.
+      # Cloudflare Workers AI: script + scene prompts and FLUX.1 [schnell] images.
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       # Optional model overrides (comma-separated, tried in order).
       CF_LLM_MODEL: ${{ secrets.CF_LLM_MODEL }}
-      CF_TTS_MODEL: ${{ secrets.CF_TTS_MODEL }}
       CF_IMAGE_MODEL: ${{ secrets.CF_IMAGE_MODEL }}
+      # Narration uses Microsoft Edge TTS (free, no API key). Optional overrides:
+      TTS_LANG: ${{ secrets.TTS_LANG }}
+      EDGE_TTS_VOICE: ${{ secrets.EDGE_TTS_VOICE }}
+      EDGE_TTS_RATE: ${{ secrets.EDGE_TTS_RATE }}
+      EDGE_TTS_PITCH: ${{ secrets.EDGE_TTS_PITCH }}
+      # Optional image fallback only; FLUX.1 [schnell] is the primary generator.
+      PIXAZO_API_KEY: ${{ secrets.PIXAZO_API_KEY }}
+      PIXAZO_BASE_URL: ${{ secrets.PIXAZO_BASE_URL }}
+      PIXAZO_IMAGE_MODEL: ${{ secrets.PIXAZO_IMAGE_MODEL }}
       VIDEO_ID: ${{ github.event.client_payload.video_id }}
       USER_ID: ${{ github.event.client_payload.user_id }}
       # Nine flat properties keep repository_dispatch below GitHub's limit.
@@ -52,7 +55,7 @@ jobs:
             pip install -r requirements.txt
           else
             echo "requirements.txt not found - installing baseline deps"
-            pip install requests
+            pip install requests edge-tts
           fi
 
       - name: Mark processing
@@ -63,7 +66,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"status":"processing","step":"Writing script","progress":10}'
 
-      # Cloudflare Workers AI script -> Pixazo images + TTS -> FFmpeg (captions burned in).
+      # Workers AI script -> FLUX.1 [schnell] images -> Edge TTS -> FFmpeg (captions burned in).
       - name: Render video
         run: python render.py
 
