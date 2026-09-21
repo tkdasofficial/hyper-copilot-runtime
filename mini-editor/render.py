@@ -1,21 +1,13 @@
-"""Reference render script for tkdasofficial/video-agent.
+"""
+Short-Form Pipeline: 'Create Reel' (Python Engine / 'mini-editor/')
+Hyper Copilot & Video Agent Specification
 
-Copy to the repo root as `render.py` (alongside `requirements.txt`).
-
-Pipeline
---------
-1. Cloudflare Workers AI (Llama instruct models) writes the narration script and
-   the per-scene image prompts (the "brain").
-2. Images: FLUX.1 [schnell] on Cloudflare Workers AI (free tier). Pixazo AI is an
-   optional fallback when PIXAZO_API_KEY is configured.
-3. Narration: Microsoft Edge TTS (`edge-tts`) - free, no API key, neural voices.
-4. FFmpeg composes the scenes with smooth Ken Burns zoom in/out, cross-fade
-   transitions between scenes, and white captions (3-5 words per cue) burned in.
-
-The selected duration is a target window, not a hard stretch: narration is never
-sped up, slowed down or clipped mid-sentence, so Edge TTS output stays natural.
-
-Progress is written back to Supabase so the Lovable UI terminal streams it live.
+Process Flow:
+1. Script & Structure: LLM generates 9:16 vertical video script & timeline structure based on user prompt.
+2. Voiceover: Edge-TTS generates audio track.
+3. Image Generation: Fetch AI images via Pixabay API using the 'Flux.1 [schnell]' model for scene visuals.
+4. Caption Rendering: Check user toggle. If captions = ON, render dynamic animated subtitle overlays; if OFF, skip subtitles.
+5. Assembly: Combine audio, Flux images, and optional captions into a vertical .mp4.
 """
 
 import base64
@@ -26,33 +18,33 @@ import os
 import shutil
 import subprocess
 import sys
-
 import requests
 
-SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
-SERVICE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-VIDEO_ID = os.environ["VIDEO_ID"]
-
-
 def env(name: str, default: str = "") -> str:
-    """Unset or blank GitHub Action inputs arrive as empty strings."""
     return (os.environ.get(name) or "").strip() or default
 
+# Supabase
+SUPABASE_URL = env("SUPABASE_URL").rstrip("/")
+SERVICE_KEY = env("SUPABASE_SERVICE_ROLE_KEY")
+VIDEO_ID = env("VIDEO_ID", "local_test_reel")
+USER_ID = env("USER_ID", "local_user")
 
-PROMPT = env("PROMPT")
-NEGATIVE_PROMPT = env("NEGATIVE_PROMPT")
+# User Preferences
+PROMPT = env("PROMPT", "Cosmic secrets of deep space nebulae")
+NEGATIVE_PROMPT = env("NEGATIVE_PROMPT", "blurry, low quality, watermark, distorted, text")
 VOICE_GENDER = env("VOICE_GENDER", "female").lower()
-IMAGE_STYLE = env("IMAGE_STYLE", "realistic photography with natural colors, lit by natural sunlight")
+IMAGE_STYLE = env("IMAGE_STYLE", "Cinematic 3D, photorealistic lighting, 8k vertical framing")
 MOTION_TEMPLATE = env("MOTION_TEMPLATE", "Auto Zoom-In")
-ASPECT_RATIO = env("ASPECT_RATIO", "9:16")
-QUALITY = env("QUALITY", "1080p")
-BITRATE = env("BITRATE", "High")
+ASPECT_RATIO = "9:16"
+WIDTH, HEIGHT = 1080, 1920
+FPS = 30
+VIDEO_BITRATE = "8M"
+FADE = 0.5  # Crossfade overlap duration between scenes
 
-# `CAPTIONS` doubles as the caption size switch so the GitHub dispatch payload
-# stays inside the 10-property limit: false | true/small | medium | large.
-CAPTIONS_RAW = env("CAPTIONS", "false").lower()
+# Captions Toggle & Scale
+CAPTIONS_RAW = env("CAPTIONS", "true").lower()
 CAPTIONS = CAPTIONS_RAW in {"1", "true", "yes", "on", "small", "medium", "large"}
-CAPTION_SIZE = CAPTIONS_RAW if CAPTIONS_RAW in {"small", "medium", "large"} else "small"
+CAPTION_SIZE = CAPTIONS_RAW if CAPTIONS_RAW in {"small", "medium", "large"} else "medium"
 
 try:
     CAPTION_SCALE = max(1, min(10, int(float(env("CAPTION_SCALE", "4")))))
@@ -60,20 +52,20 @@ except ValueError:
     CAPTION_SCALE = 4
 
 try:
-    DURATION = max(1, min(60, int(float(env("DURATION_SECONDS", "15")))))
+    DURATION = max(5, min(60, int(float(env("DURATION_SECONDS", "15")))))
 except ValueError:
     DURATION = 15
 
-# --- Providers -------------------------------------------------------------
-# Images: FLUX.1 [schnell] on Workers AI is primary (free). Pixazo is optional.
+# Providers
+PIXABAY_API_KEY = env("PIXABAY_API_KEY")
 PIXAZO_API_KEY = env("PIXAZO_API_KEY")
 PIXAZO_BASE_URL = env("PIXAZO_BASE_URL", "https://api.pixazo.ai").rstrip("/")
-if not PIXAZO_BASE_URL.startswith(("http://", "https://")):
-    PIXAZO_BASE_URL = f"https://{PIXAZO_BASE_URL}"
 PIXAZO_IMAGE_MODEL = env("PIXAZO_IMAGE_MODEL", "pixazo-image-free")
 
+NVIDIA_API_KEY = env("NVIDIA_API_KEY")
 CF_ACCOUNT_ID = env("CLOUDFLARE_ACCOUNT_ID")
 CF_API_TOKEN = env("CLOUDFLARE_API_TOKEN")
+
 CF_IMAGE_MODELS = [
     model.strip()
     for model in env(
@@ -84,7 +76,7 @@ CF_IMAGE_MODELS = [
     ).split(",")
     if model.strip()
 ]
-# Workers AI retires older model ids (HTTP 410 Gone), so try current ones in order.
+
 CF_LLM_MODELS = [
     model.strip()
     for model in env(
@@ -97,7 +89,7 @@ CF_LLM_MODELS = [
     if model.strip()
 ]
 
-# --- Edge TTS (free, key-less neural voices) --------------------------------
+# Edge TTS
 TTS_LANG = env("TTS_LANG", "en").lower()
 EDGE_VOICES = {
     ("en", "male"): "en-US-GuyNeural",
@@ -112,124 +104,54 @@ EDGE_VOICE = env(
         "en-US-AriaNeural",
     ),
 )
-# Energetic short-form delivery without sounding rushed.
 EDGE_RATE = env("EDGE_TTS_RATE", "+8%")
 EDGE_PITCH = env("EDGE_TTS_PITCH", "+0Hz")
 
-SIZES_1080 = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080)}
-SIZES_720 = {"9:16": (720, 1280), "16:9": (1280, 720), "1:1": (720, 720)}
-SIZES = SIZES_720 if QUALITY == "720p" else SIZES_1080
-WIDTH, HEIGHT = SIZES.get(ASPECT_RATIO, SIZES["9:16"])
-VIDEO_BITRATE = "5M" if BITRATE == "High" else "2500k"
 
-FPS = 30
-# Cross-fade length between two scenes.
-FADE = 0.6
-
-# One scene per ~5 seconds, at least two, at most eight.
-SCENE_COUNT = max(2, min(8, math.ceil(DURATION / 5)))
-
-
-# --- Supabase progress -----------------------------------------------------
-def patch(payload: dict) -> None:
-    requests.patch(
-        f"{SUPABASE_URL}/rest/v1/videos?id=eq.{VIDEO_ID}",
-        headers={
-            "apikey": SERVICE_KEY,
-            "Authorization": f"Bearer {SERVICE_KEY}",
-            "Content-Type": "application/json",
-        },
-        data=json.dumps(payload),
-        timeout=30,
-    )
-
+# --- Logging & Supabase Status ----------------------------------------------
+def patch_supabase(payload: dict) -> None:
+    if not (SUPABASE_URL and SERVICE_KEY and VIDEO_ID):
+        return
+    try:
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/videos?id=eq.{VIDEO_ID}",
+            headers={
+                "apikey": SERVICE_KEY,
+                "Authorization": f"Bearer {SERVICE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            json=payload,
+            timeout=10,
+        )
+    except Exception as e:
+        print(f"[Supabase] Patch notice: {e}", file=sys.stderr)
 
 def log(message: str, step: str | None = None, progress: int | None = None) -> None:
-    print(message, flush=True)
+    print(f"[MiniEditor] {message}", flush=True)
     payload: dict = {"logs": message}
     if step:
         payload["step"] = step
     if progress is not None:
         payload["progress"] = progress
-    patch(payload)
+    patch_supabase(payload)
 
 
-# --- Stage A: the brain (Cloudflare Workers AI) -----------------------------
+# --- Stage 1: Script & Structure (LLM) --------------------------------------
 def cloudflare_run(model: str, body: dict, *, timeout: int = 180) -> requests.Response:
     if not (CF_ACCOUNT_ID and CF_API_TOKEN):
         raise RuntimeError("CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN are not configured")
     response = requests.post(
         f"https://api.cloudflare.com/client/v4/accounts/{CF_ACCOUNT_ID}/ai/run/{model}",
         headers={"Authorization": f"Bearer {CF_API_TOKEN}"},
-        # Workers AI rejects null values, so never send empty fields.
         json={key: value for key, value in body.items() if value not in (None, "")},
         timeout=timeout,
     )
     if not response.ok:
-        raise RuntimeError(
-            f"Workers AI {model} failed ({response.status_code}): {response.text[:300]}"
-        )
+        raise RuntimeError(f"Workers AI {model} failed ({response.status_code}): {response.text[:200]}")
     return response
 
-
-# Edge TTS speaks at roughly 150 wpm with the rate above. The script is written
-# for the middle of a flexible window so the finished audio lands naturally
-# inside it instead of being stretched or clipped.
-WPM = 150
-TOLERANCE = 0.20  # +/-20%: a 30s target accepts ~25-36s of narration
-
-
-def word_window(duration: int) -> tuple[int, int, int]:
-    """(minimum, target, maximum) words for a flexible duration window."""
-    duration = max(1, min(60, int(duration)))
-    target = max(6, round(duration * WPM / 60))
-    return (
-        max(5, round(target * (1 - TOLERANCE))),
-        target,
-        max(8, round(target * (1 + TOLERANCE))),
-    )
-
-
-WORD_MIN, WORD_TARGET, WORD_MAX = word_window(DURATION)
-
-NATURE_STYLE_PREFIX = (
-    "humanless scenery with realistic composition, natural textures and believable light, no people"
-)
-HUMANLESS_NEGATIVE = "human, person, face, character, crowd, watermark, text"
-
-
-def image_prompt(scene_prompt: str) -> str:
-    """Humanless scene prompt builder shared by every image provider."""
-    return f"{NATURE_STYLE_PREFIX}, {scene_prompt}, {IMAGE_STYLE}"[:1900]
-
-
-def image_negative_prompt() -> str:
-    extra = NEGATIVE_PROMPT.strip().strip(",")
-    return f"{HUMANLESS_NEGATIVE}, {extra}" if extra else HUMANLESS_NEGATIVE
-
-
-def trim_to_window(script: str) -> str:
-    """Trim only when the script overruns the flexible window, at a sentence end."""
-    words = script.split()
-    if len(words) <= WORD_MAX:
-        return script.strip()
-    kept: list[str] = []
-    last_sentence_end = 0
-    for index, word in enumerate(words[:WORD_MAX]):
-        kept.append(word)
-        if word.endswith((".", "!", "?")):
-            last_sentence_end = index + 1
-    if last_sentence_end >= WORD_MIN:
-        kept = kept[:last_sentence_end]
-    trimmed = " ".join(kept).rstrip(" ,;:-")
-    if not trimmed.endswith((".", "!", "?")):
-        trimmed += "."
-    log(f"Script trimmed to {len(trimmed.split())} words for the {DURATION}s window")
-    return trimmed
-
-
-def cf_chat(system: str, user: str, *, max_tokens: int = 700) -> str:
-    """Runs a chat prompt through the first Workers AI model that answers."""
+def cf_chat(system: str, user: str, *, max_tokens: int = 800) -> str:
     body = {
         "messages": [
             {"role": "system", "content": system},
@@ -240,162 +162,174 @@ def cf_chat(system: str, user: str, *, max_tokens: int = 700) -> str:
     for model in CF_LLM_MODELS:
         try:
             raw = cloudflare_run(model, body).json()
-        except Exception as error:  # noqa: BLE001 - retired/unavailable model, try the next
-            log(f"Script model {model} unavailable ({error}); trying the next one")
+            result = raw.get("result") if isinstance(raw, dict) else None
+            if not isinstance(result, dict):
+                result = raw if isinstance(raw, dict) else {}
+            candidate = result.get("response") or result.get("result")
+            if isinstance(candidate, dict):
+                candidate = candidate.get("response") or candidate.get("text")
+            text = str(candidate).strip() if candidate else ""
+            if text and text.lower() != "none":
+                return text
+        except Exception:
             continue
-
-        # Workers AI response shapes: {"result":{"response":"..."}} or {"response":"..."}
-        result = raw.get("result") if isinstance(raw, dict) else None
-        if not isinstance(result, dict):
-            result = raw if isinstance(raw, dict) else {}
-        candidate = result.get("response")
-        if candidate is None:
-            candidate = result.get("result")
-        if isinstance(candidate, dict):
-            candidate = candidate.get("response") or candidate.get("text")
-        text = "" if candidate is None else str(candidate).strip()
-        if text and text.lower() != "none":
-            return text
     return ""
 
+def generate_script_and_timeline() -> tuple[str, list[dict]]:
+    """
+    Generates 9:16 vertical video script & timeline structure based on user prompt.
+    Produces an attention-grabbing hook in the first 2-3s, fluid pacing, and 3-5 scenes.
+    """
+    num_scenes = max(3, min(6, round(DURATION / 4.0)))
+    target_words = max(10, round(DURATION * 2.5))
 
-def clean_script(text: str) -> str:
-    """Strips list markers, labels and quotes an instruct model likes to add."""
-    if not text:
-        return ""
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
+    system_prompt = (
+        "You are an elite short-form video director specializing in viral 9:16 vertical reels.\n"
+        f"Generate a {DURATION}-second vertical reel script and structured timeline.\n"
+        "Rules:\n"
+        "1. Hook: The opening sentence must immediately hook viewers within the first 2 seconds.\n"
+        f"2. Word count: Total narration MUST be between {target_words - 5} and {target_words + 8} words.\n"
+        f"3. Scenes: Exactly {num_scenes} visual scenes for vertical 9:16 composition.\n"
+        "4. Respond with valid JSON ONLY in this format:\n"
+        "{\n"
+        '  "narration": "Full spoken voiceover script...",\n'
+        '  "scenes": [\n'
+        '    {"id": 1, "visual_description": "...", "pixabay_query": "..."},\n'
+        '    {"id": 2, "visual_description": "...", "pixabay_query": "..."}\n'
+        "  ]\n"
+        "}"
+    )
+    user_prompt = f"Topic/Prompt: {PROMPT}\nStyle: {IMAGE_STYLE}\nDuration: {DURATION}s"
+
+    raw_json = ""
+    # 1. Try Cloudflare Workers AI
+    if CF_ACCOUNT_ID and CF_API_TOKEN:
         try:
-            parsed = json.loads(text[start : end + 1])
-            if isinstance(parsed, dict) and parsed.get("script"):
-                text = str(parsed["script"])
-        except json.JSONDecodeError:
+            raw_json = cf_chat(system_prompt, user_prompt)
+        except Exception as e:
+            log(f"Workers AI script notice: {e}")
+
+    # 2. Try NVIDIA NIM if available
+    if not raw_json and NVIDIA_API_KEY:
+        try:
+            headers = {"Authorization": f"Bearer {NVIDIA_API_KEY}", "Content-Type": "application/json"}
+            payload = {
+                "model": "meta/llama-3.1-70b-instruct",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.6,
+                "max_tokens": 800,
+            }
+            res = requests.post("https://integrate.api.nvidia.com/v1/chat/completions", headers=headers, json=payload, timeout=30)
+            if res.ok:
+                raw_json = res.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            log(f"NVIDIA script notice: {e}")
+
+    # Parse JSON or fallback
+    script = ""
+    scenes = []
+    if raw_json:
+        try:
+            cleaned = raw_json.strip()
+            if "```json" in cleaned:
+                cleaned = cleaned.split("```json", 1)[1].split("```", 1)[0].strip()
+            elif "```" in cleaned:
+                cleaned = cleaned.split("```", 1)[1].split("```", 1)[0].strip()
+            data = json.loads(cleaned)
+            script = data.get("narration", "").strip()
+            scenes = data.get("scenes", [])
+        except Exception:
             pass
-    lines = []
-    for line in text.splitlines():
-        line = line.strip().strip("`").strip()
-        low = line.lower()
-        if not line or low.startswith(("script:", "narration:", "here", "note:", "scene")):
-            continue
-        lines.append(line.lstrip("-*0123456789. ").strip('"'))
-    return " ".join(lines).strip()
 
-
-def ensure_script_length(script: str, minimum_words: int) -> str:
-    """Keep narration dense enough to fill the lower edge of the window."""
-    if len(script.split()) >= minimum_words:
-        return trim_to_window(script)
-
-    expanded = clean_script(
-        cf_chat(
-            "You expand narration for humanless nature and cosmic short films. "
-            "Reply with narration sentences only.",
-            f"Topic: {PROMPT}\nCurrent narration: {script}\n"
-            f"Rewrite this as {minimum_words} to {WORD_TARGET} flowing words. "
-            "Keep the meaning, use no humans, labels, lists, or stage directions.",
-            max_tokens=500,
+    # Procedural Fallback if LLM parsing failed
+    if not script or not scenes:
+        log("Running procedural vertical screenwriter fallback...", "Structuring Reel", 15)
+        clean_topic = PROMPT.strip().rstrip(".")
+        script = (
+            f"What if the secrets of {clean_topic} are far more profound than we ever imagined? "
+            f"Beneath the visible surface lies a hidden dimension of power, mystery, and awe. "
+            f"Every single detail reshapes our understanding of reality."
         )
-    )
-    if len(expanded.split()) >= minimum_words:
-        return trim_to_window(expanded)
+        scenes = [
+            {"id": 1, "visual_description": f"{clean_topic}, opening hook, hyperrealistic vertical cinematic lighting", "pixabay_query": f"{clean_topic} landscape"},
+            {"id": 2, "visual_description": f"{clean_topic}, hidden depth, dramatic atmosphere", "pixabay_query": f"{clean_topic} nature"},
+            {"id": 3, "visual_description": f"{clean_topic}, grand finale reveal, majestic vista 8k", "pixabay_query": f"{clean_topic} cosmic"}
+        ]
 
-    pieces = [script or PROMPT]
-    bridges = [
-        "Across this vast scene, light and motion reveal details shaped quietly through time.",
-        "Colors drift through the landscape while distant forms create depth, rhythm, and wonder.",
-        "Every changing texture invites a closer look at the beauty held within this world.",
-        "The view continues beyond the horizon, calm, immense, and alive with subtle movement.",
+    log(f"Reel script generated ({len(script.split())} words, {len(scenes)} scenes)", "Script & Structure ready", 20)
+    return script, scenes
+
+
+# --- Stage 2: Voiceover (Edge-TTS) ------------------------------------------
+def generate_voiceover(script: str, output_path: str = "voice.mp3") -> float:
+    log(f"Generating voiceover via Edge-TTS ({EDGE_VOICE})", "Generating Voiceover", 35)
+    clean_text = script.strip()[:4000]
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "edge_tts",
+            "--voice", EDGE_VOICE,
+            "--rate", EDGE_RATE,
+            "--pitch", EDGE_PITCH,
+            "--text", clean_text,
+            "--write-media", output_path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Edge-TTS failed: {result.stderr or result.stdout}")
+
+    dur = get_media_duration(output_path)
+    log(f"Voiceover track ready ({dur:.2f}s)", progress=45)
+    return dur
+
+def get_media_duration(path: str) -> float:
+    try:
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path,
+        ]
+        out = subprocess.check_output(cmd, text=True).strip()
+        return max(1.0, float(out))
+    except Exception:
+        return float(DURATION)
+
+
+# --- Stage 3: Image Generation (Pixabay API & Flux.1 [schnell]) -------------
+def upscale_to_canvas(source: str, target: str) -> None:
+    """Upscales visual to exact 9:16 vertical canvas (1080x1920) with headroom for pan/zoom."""
+    w_head = round(WIDTH * 1.15)
+    h_head = round(HEIGHT * 1.15)
+    cmd = [
+        "ffmpeg", "-y", "-i", source,
+        "-vf",
+        f"scale={w_head}:{h_head}:force_original_aspect_ratio=increase:flags=lanczos,crop={w_head}:{h_head},unsharp=3:3:0.4",
+        "-q:v", "2", target,
     ]
-    index = 0
-    while len(" ".join(pieces).split()) < minimum_words:
-        pieces.append(bridges[index % len(bridges)])
-        index += 1
-    return trim_to_window(" ".join(pieces))
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        shutil.copyfile(source, target)
 
-
-def parse_scenes(text: str) -> list[str]:
-    """Reads one image prompt per line (or from a JSON array) out of the reply."""
-    scenes: list[str] = []
-    start, end = text.find("["), text.rfind("]")
-    if start != -1 and end > start:
-        try:
-            parsed = json.loads(text[start : end + 1])
-            if isinstance(parsed, list):
-                scenes = [str(item).strip() for item in parsed if str(item).strip()]
-        except json.JSONDecodeError:
-            scenes = []
-    if not scenes:
-        for line in text.splitlines():
-            line = line.strip().lstrip("-*0123456789. ").strip('"').strip()
-            if len(line) > 12 and not line.lower().startswith(("here", "note", "scene prompts")):
-                scenes.append(line)
-    return scenes
-
-
-SCENE_VARIATIONS = [
-    "sweeping establishing wide shot",
-    "close orbital detail shot",
-    "dramatic low-angle vista",
-    "glowing nebula backdrop with depth",
-    "macro texture detail",
-    "silhouetted horizon at golden light",
-    "top-down aerial perspective",
-    "distant scale shot with layered depth",
-]
-
-
-def write_script() -> tuple[str, list[str]]:
-    """Returns (narration script, one image prompt per scene)."""
-    log(f"Writing the ~{DURATION}s script with Cloudflare Workers AI", "Writing script", 12)
-
-    script = clean_script(
-        cf_chat(
-            "You are a narrator for short visual stories without human characters. "
-            "Reply with the narration sentences only — no titles, labels, lists or notes.",
-            f"Topic: {PROMPT}\n"
-            f"Write flowing narration of about {WORD_TARGET} words (between {WORD_MIN} and "
-            f"{WORD_MAX}) so it reads aloud in roughly {DURATION} seconds. "
-            "End on a complete sentence. No humans or characters, no stage directions, "
-            "no hashtags.",
-            max_tokens=500,
-        )
-    )
-    if not script:
-        log("Script model gave no usable text; narrating the prompt directly", None, None)
-        script = PROMPT
-    script = ensure_script_length(script, WORD_MIN)
-    log(f"Script ready ({len(script.split())} words · window {WORD_MIN}-{WORD_MAX})")
-
-    scenes = parse_scenes(
-        cf_chat(
-            "You write image-generation prompts. Reply with one prompt per line, nothing else.",
-            f"Story: {script}\n"
-            f"Write exactly {SCENE_COUNT} distinct image prompts in the '{IMAGE_STYLE}' style "
-            "covering different moments of this story. Each prompt is one line, 15-30 words, "
-            "showing clear, believable scenery that follows the story — never humans, faces, "
-            "characters or text.\n"
-            f"Avoid: {NEGATIVE_PROMPT or 'nothing in particular'}.",
-            max_tokens=700,
-        )
-    )
-    while len(scenes) < SCENE_COUNT:
-        variation = SCENE_VARIATIONS[len(scenes) % len(SCENE_VARIATIONS)]
-        scenes.append(f"{PROMPT}, {variation}, {IMAGE_STYLE}")
-    return script, scenes[:SCENE_COUNT]
-
-
-# --- Stage B: FLUX.1 [schnell] images + Edge TTS narration ------------------
 def save_binary_or_b64(response: requests.Response, path: str, keys: tuple[str, ...]) -> None:
-    """Writes a provider response to `path`, accepting raw bytes, base64 or a URL."""
-    if "application/json" not in response.headers.get("content-type", ""):
-        with open(path, "wb") as handle:
-            handle.write(response.content)
+    content_type = response.headers.get("Content-Type", "")
+    if "image" in content_type:
+        with open(path, "wb") as f:
+            f.write(response.content)
         return
 
-    body = response.json()
-    candidates: list[dict] = [body]
-    if isinstance(body.get("data"), list) and body["data"]:
-        candidates.insert(0, body["data"][0])
+    try:
+        body = response.json()
+    except Exception:
+        with open(path, "wb") as f:
+            f.write(response.content)
+        return
+
+    candidates = [body]
     if isinstance(body.get("result"), dict):
         candidates.insert(0, body["result"])
     if isinstance(body.get("output"), dict):
@@ -404,190 +338,177 @@ def save_binary_or_b64(response: requests.Response, path: str, keys: tuple[str, 
     for item in candidates:
         for key in ("url", "image_url"):
             if isinstance(item.get(key), str) and item[key].startswith("http"):
-                with open(path, "wb") as handle:
-                    handle.write(requests.get(item[key], timeout=240).content)
+                res = requests.get(item[key], timeout=120)
+                with open(path, "wb") as f:
+                    f.write(res.content)
                 return
         for key in keys:
-            value = item.get(key)
-            if isinstance(value, str) and value:
-                payload = value.split(",", 1)[-1] if value.startswith("data:") else value
-                with open(path, "wb") as handle:
-                    handle.write(base64.b64decode(payload))
+            val = item.get(key)
+            if isinstance(val, str) and val:
+                payload = val.split(",", 1)[-1] if val.startswith("data:") else val
+                with open(path, "wb") as f:
+                    f.write(base64.b64decode(payload))
                 return
-    raise RuntimeError(f"Provider response contained no media: {json.dumps(body)[:300]}")
+    raise RuntimeError("Provider response contained no valid image data")
 
-
-def cloudflare_image(scene_prompt: str, path: str) -> None:
-    """FLUX.1 [schnell] first (free tier), then the SDXL models as fallback."""
-    prompt = image_prompt(scene_prompt)
-    errors: list[str] = []
-    for model in CF_IMAGE_MODELS:
-        if "flux" in model:
-            # FLUX.1 [schnell] on Workers AI accepts prompt + steps + seed only.
-            seed = int(hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:8], 16)
-            body = {"prompt": prompt, "seed": seed, "steps": 6}
-        else:
-            body = {
-                "prompt": prompt,
-                "negative_prompt": image_negative_prompt(),
-                "width": min(WIDTH, 1024),
-                "height": min(HEIGHT, 1024),
-            }
-        try:
-            response = cloudflare_run(model, body)
-            save_binary_or_b64(response, f"raw_{path}", ("b64_json", "image", "image_base64"))
-            upscale_to_canvas(f"raw_{path}", path)
-            return
-        except Exception as error:  # noqa: BLE001 - try the next image model
-            errors.append(f"{model}: {error}")
-    raise RuntimeError("no Workers AI image model succeeded — " + " | ".join(errors))
-
-
-def upscale_to_canvas(source: str, target: str) -> None:
-    """Lanczos-upscale a model image to the exact Full HD vertical/landscape canvas."""
-    result = subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", source,
-            "-vf",
-            # A little headroom (1.15x) so the Ken Burns zoom never shows an edge.
-            f"scale={round(WIDTH * 1.15)}:{round(HEIGHT * 1.15)}:"
-            "force_original_aspect_ratio=increase:flags=lanczos,"
-            f"crop={round(WIDTH * 1.15)}:{round(HEIGHT * 1.15)},unsharp=3:3:0.4",
-            "-q:v", "2", target,
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        # Fall back to the raw image rather than failing the whole render.
-        shutil.copyfile(source, target)
-
-
-def pixazo_image(scene_prompt: str, path: str) -> None:
-    if not PIXAZO_API_KEY:
-        raise RuntimeError("PIXAZO_API_KEY is not configured")
-    response = requests.post(
-        f"{PIXAZO_BASE_URL}/v1/images/generations",
-        headers={
-            "Authorization": f"Bearer {PIXAZO_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": PIXAZO_IMAGE_MODEL,
-            "prompt": image_prompt(scene_prompt),
-            "negative_prompt": image_negative_prompt(),
-            "width": WIDTH,
-            "height": HEIGHT,
-            "n": 1,
-        },
-        timeout=240,
-    )
-    response.raise_for_status()
-    save_binary_or_b64(response, f"raw_{path}", ("b64_json", "image", "image_base64"))
-    upscale_to_canvas(f"raw_{path}", path)
-
-
-def generate_scenes(scene_prompts: list[str]) -> list[str]:
-    log(
-        f"Generating {len(scene_prompts)} scene images at {WIDTH}x{HEIGHT} "
-        "with FLUX.1 [schnell]",
-        "Generating scenes",
-        28,
-    )
-    paths: list[str] = []
-    for index, scene_prompt in enumerate(scene_prompts):
-        path = f"scene_{index}.jpg"
-        try:
-            cloudflare_image(scene_prompt, path)
-        except Exception as error:  # noqa: BLE001 - optional Pixazo fallback
-            log(f"FLUX images unavailable ({error}); trying Pixazo AI")
-            pixazo_image(scene_prompt, path)
-        paths.append(path)
-        log(f"scene {index + 1}/{len(scene_prompts)} ready")
-    return paths
-
-
-def generate_voice(script: str) -> str:
-    """Narration via Microsoft Edge TTS — free, no API key, neural voices."""
-    log(f"Synthesising narration with Edge TTS ({EDGE_VOICE})", "Generating voice", 52)
-    path = "voice.mp3"
-    text = script.strip()[:4000]
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "edge_tts",
-            "--voice", EDGE_VOICE,
-            "--rate", EDGE_RATE,
-            "--pitch", EDGE_PITCH,
-            "--text", text,
-            "--write-media", path,
-        ],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0 or not os.path.exists(path) or os.path.getsize(path) < 1024:
-        detail = (result.stderr or result.stdout or "").strip()[-300:]
-        raise RuntimeError(f"Edge TTS failed: {detail}")
-    return path
-
-
-# --- Stage C: captions + FFmpeg composition --------------------------------
-def audio_duration(path: str) -> float:
-    probe = subprocess.run(
-        [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", path,
-        ],
-        capture_output=True, text=True, check=True,
-    )
+def fetch_pixabay_vertical_image(query: str, path: str) -> bool:
+    if not PIXABAY_API_KEY:
+        return False
     try:
-        return max(float(probe.stdout.strip()), 1.0)
-    except ValueError:
-        return float(DURATION)
+        url = "https://pixabay.com/api/"
+        params = {
+            "key": PIXABAY_API_KEY,
+            "q": query[:100],
+            "image_type": "photo",
+            "orientation": "vertical",
+            "safesearch": "true",
+            "per_page": 5,
+        }
+        res = requests.get(url, params=params, timeout=15)
+        if res.ok:
+            hits = res.json().get("hits", [])
+            if hits:
+                img_url = hits[0].get("largeImageURL") or hits[0].get("imageURL") or hits[0].get("webformatURL")
+                if img_url:
+                    img_data = requests.get(img_url, timeout=30).content
+                    raw_path = f"raw_{path}"
+                    with open(raw_path, "wb") as f:
+                        f.write(img_data)
+                    upscale_to_canvas(raw_path, path)
+                    return True
+    except Exception as e:
+        log(f"Pixabay visual search notice: {e}")
+    return False
+
+def generate_flux_schnell_image(prompt: str, path: str) -> bool:
+    """Generates AI scene visual using Flux.1 [schnell] model."""
+    full_prompt = f"vertical 9:16 framing, {prompt}, {IMAGE_STYLE}, high resolution, award winning, masterpiece"[:1900]
+    seed = int(hashlib.sha256(full_prompt.encode("utf-8")).hexdigest()[:8], 16)
+
+    # 1. Try Cloudflare Workers AI FLUX.1 [schnell]
+    if CF_ACCOUNT_ID and CF_API_TOKEN:
+        try:
+            body = {"prompt": full_prompt, "seed": seed, "steps": 6}
+            res = cloudflare_run("@cf/black-forest-labs/flux-1-schnell", body)
+            raw_path = f"raw_{path}"
+            save_binary_or_b64(res, raw_path, ("b64_json", "image", "image_base64"))
+            upscale_to_canvas(raw_path, path)
+            return True
+        except Exception as e:
+            log(f"Cloudflare Flux.1 [schnell] notice: {e}")
+
+    # 2. Try Pixazo API Flux
+    if PIXAZO_API_KEY:
+        try:
+            res = requests.post(
+                f"{PIXAZO_BASE_URL}/v1/images/generations",
+                headers={"Authorization": f"Bearer {PIXAZO_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": PIXAZO_IMAGE_MODEL,
+                    "prompt": full_prompt,
+                    "negative_prompt": NEGATIVE_PROMPT,
+                    "width": WIDTH,
+                    "height": HEIGHT,
+                    "n": 1,
+                },
+                timeout=180,
+            )
+            if res.ok:
+                raw_path = f"raw_{path}"
+                save_binary_or_b64(res, raw_path, ("b64_json", "image", "image_base64"))
+                upscale_to_canvas(raw_path, path)
+                return True
+        except Exception as e:
+            log(f"Pixazo Flux image notice: {e}")
+
+    return False
+
+def source_scene_visuals(scenes: list[dict]) -> list[str]:
+    """
+    Fetches scene visuals using Pixabay API and Flux.1 [schnell] AI image generation.
+    Ensures every scene has a gorgeous, 9:16 vertical asset ready.
+    """
+    log(f"Sourcing {len(scenes)} scene visuals (Pixabay API + Flux.1 [schnell])...", "Generating Visuals", 50)
+    image_paths = []
+    os.makedirs("assets/reel_scenes", exist_ok=True)
+
+    for idx, sc in enumerate(scenes):
+        target_path = f"assets/reel_scenes/scene_{idx:02d}.jpg"
+        desc = sc.get("visual_description", PROMPT)
+        query = sc.get("pixabay_query", PROMPT)
+
+        success = False
+        # 1. Fetch via Pixabay API using query
+        if PIXABAY_API_KEY:
+            success = fetch_pixabay_vertical_image(query, target_path)
+            if success:
+                log(f"Scene {idx+1}/{len(scenes)} fetched via Pixabay API ('{query}')")
+
+        # 2. Fetch AI visual using Flux.1 [schnell] model
+        if not success:
+            success = generate_flux_schnell_image(desc, target_path)
+            if success:
+                log(f"Scene {idx+1}/{len(scenes)} generated via Flux.1 [schnell]")
+
+        # 3. Fallback: Solid procedural gradient with vignette
+        if not success:
+            log(f"Scene {idx+1}: applying procedural visual fallback")
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-f", "lavfi",
+                    "-i", f"color=c=0x111625:s={round(WIDTH*1.15)}x{round(HEIGHT*1.15)}:d=1",
+                    "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=white@0.05:t=fill",
+                    "-frames:v", "1", target_path,
+                ],
+                check=True,
+                capture_output=True,
+            )
+
+        image_paths.append(target_path)
+
+    return image_paths
 
 
+# --- Stage 4: Caption Rendering (Dynamic Animated Subtitles) ----------------
 def ass_timestamp(seconds: float) -> str:
-    seconds = max(0.0, seconds)
     centis = int(round(seconds * 100))
     hours, centis = divmod(centis, 360_000)
     minutes, centis = divmod(centis, 6_000)
     secs, centis = divmod(centis, 100)
     return f"{hours:d}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
-
-# White-only caption sizing, measured on a 1080x1920 canvas.
-CAPTION_SIZES = {"small": 44, "medium": 58, "large": 74}
-
-
-def write_ass(script: str, total: float, path: str = "captions.ass") -> str:
-    """Bottom-centre white captions, 3-5 words per cue, sized by CAPTION_SIZE.
-
-    An ASS file is generated directly (instead of an SRT + force_style) because
-    force_style sizes are relative to libass' default 384x288 script resolution.
+def generate_animated_ass_captions(script: str, total_duration: float, path: str = "captions.ass") -> str:
+    """
+    Renders dynamic animated subtitle overlays for 9:16 vertical reels.
+    Features:
+    - 2-4 words per cue for viral reel pacing
+    - Dynamic scale-pop on entry: {\\t(0, 100, \\fscx115\\fscy115)\\t(100, 220, \\fscx100\\fscy100)}
+    - High-visibility font with dark outline and drop shadow in safe zone
     """
     words = script.split()
     if not words:
-        words = [PROMPT or "…"]
+        words = [PROMPT]
 
-    # 3-5 words per cue: pack up to 5 short words, break earlier on long ones.
     cues: list[list[str]] = []
-    current: list[str] = []
-    for word in words:
-        current.append(word)
-        chars = len(" ".join(current))
-        if len(current) >= 5 or (len(current) >= 3 and chars > 22):
-            cues.append(current)
-            current = []
-    if current:
-        if len(current) < 3 and cues:
-            cues[-1].extend(current)
+    curr: list[str] = []
+    for w in words:
+        curr.append(w)
+        if len(curr) >= 3 or len(" ".join(curr)) >= 18:
+            cues.append(curr)
+            curr = []
+    if curr:
+        if cues and len(curr) < 2:
+            cues[-1].extend(curr)
         else:
-            cues.append(current)
+            cues.append(curr)
+
     weight = sum(len(" ".join(c)) for c in cues) or 1
+    font_size = round(56 * (CAPTION_SCALE / 4.0))
+    margin_v = round(HEIGHT * 0.16)  # Safe bottom area above UI controls
+    margin_h = round(WIDTH * 0.08)
 
-    base = CAPTION_SIZES.get(CAPTION_SIZE, CAPTION_SIZES["small"])
-    font_size = max(22, round(HEIGHT * base / 1920 * (CAPTION_SCALE / 4)))
-    # Alignment 2 = bottom centre; the baseline sits at roughly 88% of the canvas.
-    margin_v = max(24, round(HEIGHT * 0.10))
-    margin_h = max(40, round(WIDTH * 0.08))
-
+    # Style: Yellow primary (&H0000FFFF) with black outline (&H00000000)
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -599,146 +520,134 @@ def write_ass(script: str, total: float, path: str = "captions.ass") -> str:
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        # Pure white text (&H00FFFFFF) with a black outline for dark cosmic footage.
-        f"Style: Caption,DejaVu Sans,{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,"
-        f"&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,{margin_h},{margin_h},{margin_v},1\n\n"
+        f"Style: ReelPopup,DejaVu Sans,{font_size},&H0000FFFF,&H0000FFFF,&H00000000,"
+        f"&H80000000,-1,0,0,0,100,100,0,0,1,5,2,2,{margin_h},{margin_h},{margin_v},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )
 
     clock = 0.0
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(header)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(header)
         for cue in cues:
-            text = " ".join(cue).replace("\n", " ")
-            span = max(0.5, total * (len(text) / weight))
-            start, end = clock, min(total, clock + span)
-            clock = end
-            handle.write(
-                f"Dialogue: 0,{ass_timestamp(start)},{ass_timestamp(end)},Caption,,0,0,0,,{text}\n"
+            raw_text = " ".join(cue).upper()
+            span = max(0.45, total_duration * (len(raw_text) / weight))
+            start_t = clock
+            end_t = min(total_duration, clock + span)
+            clock = end_t
+            # Dynamic animated scale pop effect
+            animated_text = f"{{\\t(0,90,\\fscx118\\fscy118)\\t(90,190,\\fscx100\\fscy100)}}{raw_text}"
+            f.write(
+                f"Dialogue: 0,{ass_timestamp(start_t)},{ass_timestamp(end_t)},ReelPopup,,0,0,0,,{animated_text}\n"
             )
-    log(f"Burning {len(cues)} white caption cues ({CAPTION_SIZE})", "Rendering captions", 68)
+
+    log(f"Dynamic animated captions compiled ({len(cues)} cues)", "Rendering Captions", 70)
     return path
 
 
-def zoom_expression(index: int, frames: int) -> str:
-    """Smooth linear Ken Burns that starts and ends exactly with the scene.
-
-    Linear in `on` (frame number) rather than incremental, so there is no
-    stutter, no accumulation drift and no abrupt jump at the scene boundary.
-    """
-    span = 0.14
-    if MOTION_TEMPLATE == "Pan & Scan":
-        return "1.08"
-    if MOTION_TEMPLATE == "Fade Transitions":
-        span = 0.06
-    if MOTION_TEMPLATE == "Auto Zoom-In":
-        zoom_in = True
-    else:
-        # Dynamic Keyframe (and Pan & Scan panning) alternate in / out per scene.
-        zoom_in = index % 2 == 0
+# --- Stage 5: Assembly (FFmpeg Vertical .mp4) --------------------------------
+def zoom_filter(index: int, frames: int) -> str:
+    span = 0.12
+    zoom_in = (index % 2 == 0)
     if zoom_in:
         return f"1.0+{span}*on/{frames}"
-    return f"{1.0 + span}-{span}*on/{frames}"
+    return f"{1.0+span}-{span}*on/{frames}"
 
+def assemble_reel(scenes: list[str], voice_path: str, script: str, audio_dur: float) -> str:
+    log("Assembling vertical 9:16 reel with FFmpeg...", "Compiling Reel", 75)
+    total_dur = round(audio_dur + 0.5, 3)
+    num_scenes = len(scenes)
+    per_scene = (total_dur + FADE * (num_scenes - 1)) / num_scenes
 
-def scene_filter(index: int, seconds: float) -> str:
-    """Per-scene chain: canvas fit, smooth zoom, frame rate, pixel format."""
-    frames = max(2, int(round(seconds * FPS)))
-    zoom = zoom_expression(index, frames)
-    pan_x = (
-        f"iw/2-(iw/zoom/2)+sin(on/{max(20, frames)}*3.14159)*(iw*0.04)"
-        if MOTION_TEMPLATE == "Pan & Scan"
-        else "iw/2-(iw/zoom/2)"
-    )
-    return (
-        f"scale={round(WIDTH * 1.15)}:{round(HEIGHT * 1.15)}:"
-        "force_original_aspect_ratio=increase,"
-        f"crop={round(WIDTH * 1.15)}:{round(HEIGHT * 1.15)},"
-        f"zoompan=z='{zoom}':x='{pan_x}':y='ih/2-(ih/zoom/2)':"
-        f"d={frames}:s={WIDTH}x{HEIGHT}:fps={FPS},"
-        f"trim=duration={seconds:.3f},setpts=PTS-STARTPTS,"
-        f"fps={FPS},format=yuv420p"
-    )
+    inputs = []
+    for p in scenes:
+        inputs += ["-loop", "1", "-t", f"{per_scene + 0.6:.3f}", "-i", p]
+    inputs += ["-i", voice_path]
 
+    chains = []
+    for i in range(num_scenes):
+        frames = max(2, int(round(per_scene * FPS)))
+        z = zoom_filter(i, frames)
+        chain = (
+            f"[{i}:v]"
+            f"scale={round(WIDTH * 1.15)}:{round(HEIGHT * 1.15)}:force_original_aspect_ratio=increase,"
+            f"crop={round(WIDTH * 1.15)}:{round(HEIGHT * 1.15)},"
+            f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={WIDTH}x{HEIGHT}:fps={FPS},"
+            f"trim=duration={per_scene:.3f},setpts=PTS-STARTPTS,fps={FPS},format=yuv420p[v{i}]"
+        )
+        chains.append(chain)
 
-def compose(scenes: list[str], voice: str, script: str) -> None:
-    log("Composing final video with FFmpeg", "Rendering video", 78)
-    narration = audio_duration(voice)
-
-    # The narration is never stretched or clipped: it defines the runtime, with a
-    # short breathing tail. The selected duration is only a target window.
-    total = round(narration + 0.6, 3)
-    count = len(scenes)
-    # Scenes overlap by FADE, so each clip is a little longer than its share.
-    per_scene = (total + FADE * (count - 1)) / count
-
-    inputs: list[str] = []
-    for path in scenes:
-        inputs += ["-loop", "1", "-t", f"{per_scene + 0.5:.3f}", "-i", path]
-    inputs += ["-i", voice]
-
-    chains = [f"[{i}:v]{scene_filter(i, per_scene)}[v{i}]" for i in range(count)]
-
-    # Cross-fade each scene into the next for a polished switch.
     last = "v0"
     offset = per_scene - FADE
-    for i in range(1, count):
-        out = f"x{i}"
+    for i in range(1, num_scenes):
+        out_tag = f"x{i}"
         chains.append(
-            f"[{last}][v{i}]xfade=transition=fade:duration={FADE}:offset={offset:.3f}[{out}]"
+            f"[{last}][v{i}]xfade=transition=fade:duration={FADE}:offset={offset:.3f}[{out_tag}]"
         )
-        last = out
+        last = out_tag
         offset += per_scene - FADE
 
-    video_tail = [f"fade=t=in:st=0:d=0.5", f"fade=t=out:st={max(0.0, total - 0.6):.3f}:d=0.6"]
-    if CAPTIONS:
-        video_tail.append(f"subtitles={write_ass(script, narration)}")
-    else:
-        log("Captions disabled for this render", None, None)
-    video_tail.append("format=yuv420p")
-    chains.append(f"[{last}]{','.join(video_tail)}[v]")
+    video_tail = ["fade=t=in:st=0:d=0.4", f"fade=t=out:st={max(0.0, total_dur - 0.5):.3f}:d=0.5"]
 
+    # Check User Captions Toggle
+    if CAPTIONS:
+        ass_path = generate_animated_ass_captions(script, audio_dur)
+        video_tail.append(f"subtitles={ass_path}")
+        log("Captions = ON: dynamic animated subtitles embedded in video stream")
+    else:
+        log("Captions = OFF: skipping subtitle overlay")
+
+    video_tail.append("format=yuv420p")
+    chains.append(f"[{last}]{','.join(video_tail)}[vout]")
     chains.append(
-        f"[{count}:a]apad,atrim=0:{total:.3f},"
-        f"afade=t=out:st={max(0.0, total - 0.5):.3f}:d=0.5,asetpts=N/SR/TB[a]"
+        f"[{num_scenes}:a]apad,atrim=0:{total_dur:.3f},"
+        f"afade=t=out:st={max(0.0, total_dur - 0.4):.3f}:d=0.4,asetpts=N/SR/TB[aout]"
     )
 
-    command = [
+    out_file = "out.mp4"
+    cmd = [
         "ffmpeg", "-y", *inputs,
         "-filter_complex", ";".join(chains),
-        "-map", "[v]", "-map", "[a]",
-        "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-b:v", VIDEO_BITRATE,
+        "-map", "[vout]", "-map", "[aout]",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-b:v", VIDEO_BITRATE,
         "-c:a", "aac", "-b:a", "192k",
-        "-r", str(FPS), "-t", f"{total:.3f}", "-movflags", "+faststart",
-        "out.mp4",
+        "-r", str(FPS), "-t", f"{total_dur:.3f}", "-movflags", "+faststart",
+        out_file,
     ]
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode != 0:
-        detail = (result.stderr or "").strip().splitlines()[-6:]
-        raise RuntimeError("FFmpeg failed: " + " | ".join(detail))
-    log(f"Final video {total:.1f}s (narration {narration:.1f}s · target {DURATION}s)")
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError(f"FFmpeg render error: {res.stderr[-500:]}")
+
+    log(f"Reel assembly finished ({total_dur:.1f}s, 1080x1920 @ {FPS}fps)", progress=88)
+    return out_file
 
 
+# --- Main Execution ---------------------------------------------------------
 def main() -> int:
     try:
-        log(
-            f"Video Agent starting · ~{DURATION}s · {ASPECT_RATIO} · {QUALITY} · "
-            f"captions {CAPTION_SIZE if CAPTIONS else 'off'}",
-            "Initializing",
-            5,
-        )
-        script, scene_prompts = write_script()
-        scenes = generate_scenes(scene_prompts)
-        voice = generate_voice(script)
-        compose(scenes, voice, script)
-        log("Render complete", "Finished", 95)
-        return 0
-    except Exception as error:  # noqa: BLE001
-        log(f"Render failed: {error}")
-        patch({"status": "failed", "error": str(error)[:500]})
-        return 1
+        log("Starting Short-Form Pipeline: 'Create Reel' (Python Engine / 'mini-editor/')", "Initializing Reel Pipeline", 5)
+        log(f"Target: 9:16 Vertical (1080x1920) · Captions: {'ON (Animated)' if CAPTIONS else 'OFF'}")
 
+        # 1. Script & Structure
+        script, scenes = generate_script_and_timeline()
+
+        # 2. Voiceover (Edge-TTS)
+        voice_path = "voice.mp3"
+        audio_dur = generate_voiceover(script, voice_path)
+
+        # 3. Image Generation (Pixabay API + Flux.1 [schnell])
+        visual_paths = source_scene_visuals(scenes)
+
+        # 4 & 5. Caption Rendering (Conditional) & Assembly
+        out_mp4 = assemble_reel(visual_paths, voice_path, script, audio_dur)
+
+        log("Reel render complete!", "Render Complete", 92)
+        return 0
+    except Exception as e:
+        err = f"Reel pipeline error: {e}"
+        log(err, "failed")
+        patch_supabase({"status": "failed", "step": "failed", "error": err})
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main())

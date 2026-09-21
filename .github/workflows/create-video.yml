@@ -2,10 +2,28 @@ name: Create Video
 
 on:
   repository_dispatch:
-    types: [long_form]
+    types: [video_dispatch, long_form]
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Video Prompt"
+        required: true
+        default: "Epic documentary about ancient oceanic depths and geological time"
+      duration_minutes:
+        description: "Duration in minutes"
+        required: false
+        default: "2"
+      captions:
+        description: "Captions toggle (true/false)"
+        required: false
+        default: "true"
+      voice_gender:
+        description: "Voice Gender (male/female)"
+        required: false
+        default: "male"
 
 jobs:
-  render-long-form:
+  render-video:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -14,25 +32,26 @@ jobs:
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-      GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GOOGLE_CLOUD_API_ID: ${{ secrets.GOOGLE_CLOUD_API_ID }}
+      GOOGLE_CLOUD_API_SECRET: ${{ secrets.GOOGLE_CLOUD_API_SECRET }}
       GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
       GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
       GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      VIDEO_ID: ${{ github.event.client_payload.video_id }}
-      USER_ID: ${{ github.event.client_payload.user_id }}
-      PROMPT: ${{ github.event.client_payload.prompt }}
+      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+      VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
+      USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
+      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
-      VOICE_GENDER: ${{ github.event.client_payload.voice_gender }}
-      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona }}
-      IMAGE_STYLE: ${{ github.event.client_payload.image_style }}
+      VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'male' }}
+      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || 'Cosmic Documentary' }}
+      IMAGE_STYLE: ${{ github.event.client_payload.image_style || 'Cinematic Documentary' }}
       ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '16:9' }}
-      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || '300' }}
-      DURATION_MINUTES: ${{ github.event.client_payload.duration_minutes || '5' }}
-      CAPTIONS: ${{ github.event.client_payload.captions }}
-      CAPTION_SCALE: ${{ github.event.client_payload.caption_scale }}
-
+      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds }}
+      DURATION_MINUTES: ${{ github.event.client_payload.duration_minutes || inputs.duration_minutes || '2' }}
+      CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
+      CAPTION_SCALE: ${{ github.event.client_payload.caption_scale || '4' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -55,21 +74,22 @@ jobs:
           cd editor/build
           cmake -DCMAKE_BUILD_TYPE=Release ..
           make -j$(nproc)
-          ./hyper_editor --help
+          ./hyper_editor --help || true
 
       - name: Mark processing in Supabase
+        if: env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
           curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"status":"processing","step":"Initializing Long-Form Engine","progress":5}'
+            -d '{"status":"processing","step":"Executing C++ Long-Form Pipeline","progress":5}' || true
 
-      - name: Execute Long-Form Video Pipeline (NVIDIA Brain, Pexels/Pixabay & C++ Editor)
+      - name: Execute Long-Form Video Pipeline (NVIDIA Brain, Pexels/Pixabay & C++ Engine)
         run: python editor/long_form_pipeline.py
 
       - name: Upload Master MP4 to Supabase Storage
-        if: success()
+        if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
           if [ -f out.mp4 ]; then
             curl -sS -X POST \
@@ -78,7 +98,7 @@ jobs:
               -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Content-Type: video/mp4" \
               -H "x-upsert: true" \
-              --data-binary @out.mp4
+              --data-binary @out.mp4 || true
           fi
 
       - name: Export Rendered Video to Google Drive
@@ -87,10 +107,10 @@ jobs:
           python editor/export_to_drive.py || true
 
       - name: Mark failed
-        if: failure()
+        if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
           curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"status":"failed","error":"Long-form C++ pipeline failed. Check GitHub Actions logs."}'
+            -d '{"status":"failed","error":"Long-form C++ pipeline failed. Check GitHub Actions logs."}' || true

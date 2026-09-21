@@ -1,10 +1,29 @@
 name: Create Reel
+
 on:
   repository_dispatch:
-    types: [short_form]
+    types: [reel_dispatch, short_form, video_agent_render]
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Reel Prompt"
+        required: true
+        default: "Cinematic vertical reel about deep space mysteries"
+      captions:
+        description: "Captions toggle (true/false)"
+        required: false
+        default: "true"
+      voice_gender:
+        description: "Voice Gender (male/female)"
+        required: false
+        default: "female"
+      duration_seconds:
+        description: "Duration in seconds"
+        required: false
+        default: "15"
 
 jobs:
-  render-short-form:
+  render-reel:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -14,24 +33,31 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CF_LLM_MODEL: ${{ secrets.CF_LLM_MODEL }}
       CF_IMAGE_MODEL: ${{ secrets.CF_IMAGE_MODEL }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      PIXAZO_API_KEY: ${{ secrets.PIXAZO_API_KEY }}
+      PIXAZO_BASE_URL: ${{ secrets.PIXAZO_BASE_URL }}
+      PIXAZO_IMAGE_MODEL: ${{ secrets.PIXAZO_IMAGE_MODEL }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       TTS_LANG: ${{ secrets.TTS_LANG }}
       EDGE_TTS_VOICE: ${{ secrets.EDGE_TTS_VOICE }}
       EDGE_TTS_RATE: ${{ secrets.EDGE_TTS_RATE }}
       EDGE_TTS_PITCH: ${{ secrets.EDGE_TTS_PITCH }}
-      PIXAZO_API_KEY: ${{ secrets.PIXAZO_API_KEY }}
-      PIXAZO_BASE_URL: ${{ secrets.PIXAZO_BASE_URL }}
-      PIXAZO_IMAGE_MODEL: ${{ secrets.PIXAZO_IMAGE_MODEL }}
-      VIDEO_ID: ${{ github.event.client_payload.video_id }}
-      USER_ID: ${{ github.event.client_payload.user_id }}
-      PROMPT: ${{ github.event.client_payload.prompt }}
+      GOOGLE_CLOUD_API_ID: ${{ secrets.GOOGLE_CLOUD_API_ID }}
+      GOOGLE_CLOUD_API_SECRET: ${{ secrets.GOOGLE_CLOUD_API_SECRET }}
+      GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
+      GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
+      GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID }}
+      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+      VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
+      USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
+      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
-      VOICE_GENDER: ${{ github.event.client_payload.voice_gender }}
-      IMAGE_STYLE: ${{ github.event.client_payload.image_style }}
+      VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'female' }}
+      IMAGE_STYLE: ${{ github.event.client_payload.image_style || 'Cinematic 3D' }}
       ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '9:16' }}
-      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || '15' }}
-      CAPTIONS: ${{ github.event.client_payload.captions }}
-      CAPTION_SCALE: ${{ github.event.client_payload.caption_scale }}
-
+      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || inputs.duration_seconds || '15' }}
+      CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
+      CAPTION_SCALE: ${{ github.event.client_payload.caption_scale || '4' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,25 +72,29 @@ jobs:
           pip install requests edge-tts
 
       - name: Mark processing in Supabase
+        if: env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
           curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"status":"processing","step":"Writing script","progress":10}'
+            -d '{"status":"processing","step":"Generating Reel (mini-editor)","progress":10}' || true
 
-      - name: Render Short-Form Video (mini-editor)
+      - name: Render Reel (Short-Form Engine / mini-editor)
         run: python mini-editor/render.py
 
       - name: Upload MP4 to Supabase Storage
+        if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
-          curl -sS -X POST \
-            "$SUPABASE_URL/storage/v1/object/videos/$USER_ID/$VIDEO_ID.mp4" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Content-Type: video/mp4" \
-            -H "x-upsert: true" \
-            --data-binary @out.mp4
+          if [ -f out.mp4 ]; then
+            curl -sS -X POST \
+              "$SUPABASE_URL/storage/v1/object/videos/$USER_ID/$VIDEO_ID.mp4" \
+              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Content-Type: video/mp4" \
+              -H "x-upsert: true" \
+              --data-binary @out.mp4 || true
+          fi
 
       - name: Export Video to Google Drive
         if: success()
@@ -72,18 +102,19 @@ jobs:
           python editor/export_to_drive.py || true
 
       - name: Mark completed in Supabase
+        if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
           curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"status\":\"completed\",\"progress\":100,\"step\":\"Finished\",\"video_url\":\"$USER_ID/$VIDEO_ID.mp4\"}"
+            -d "{\"status\":\"completed\",\"progress\":100,\"step\":\"Finished\",\"video_url\":\"$USER_ID/$VIDEO_ID.mp4\"}" || true
 
       - name: Mark failed
-        if: failure()
+        if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
           curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"status":"failed","error":"Short-form render failed. Check GitHub Actions logs."}'
+            -d '{"status":"failed","error":"Reel render failed. Check GitHub Actions logs."}' || true
