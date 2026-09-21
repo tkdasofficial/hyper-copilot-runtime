@@ -1,4 +1,4 @@
-name: Create Video (Long Form)
+name: Create Video
 run-name: ${{ format('🎬 Video: {0}', github.event.client_payload.prompt) }}
 
 on:
