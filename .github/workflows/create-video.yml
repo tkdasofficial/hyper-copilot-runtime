@@ -1,17 +1,7 @@
 name: Create Video
-run-name: ${{ format('🎬 Video: {0}', github.event.client_payload.prompt) }}
-
 on:
   repository_dispatch:
     types: [long_form]
-  workflow_dispatch:
-    inputs:
-      video_id:
-        description: "Supabase Video ID"
-        required: true
-      prompt:
-        description: "Video Prompt"
-        required: true
 
 jobs:
   render-long-form:
@@ -29,9 +19,9 @@ jobs:
       GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      VIDEO_ID: ${{ github.event.client_payload.video_id || inputs.video_id }}
+      VIDEO_ID: ${{ github.event.client_payload.video_id }}
       USER_ID: ${{ github.event.client_payload.user_id }}
-      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
+      PROMPT: ${{ github.event.client_payload.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
       VOICE_GENDER: ${{ github.event.client_payload.voice_gender }}
       VOICE_PERSONA: ${{ github.event.client_payload.voice_persona }}
