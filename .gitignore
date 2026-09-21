@@ -1,0 +1,7 @@
+editor/build/
+build/
+assets/
+out.mp4
+timeline.json
+*.pyc
+__pycache__/
