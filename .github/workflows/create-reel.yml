@@ -1,17 +1,7 @@
 name: Create Reel
-run-name: ${{ format('📱 Reel: {0}', github.event.client_payload.prompt) }}
-
 on:
   repository_dispatch:
     types: [short_form]
-  workflow_dispatch:
-    inputs:
-      video_id:
-        description: "Supabase Video ID"
-        required: true
-      prompt:
-        description: "Video Prompt"
-        required: true
 
 jobs:
   render-short-form:
@@ -31,9 +21,9 @@ jobs:
       PIXAZO_API_KEY: ${{ secrets.PIXAZO_API_KEY }}
       PIXAZO_BASE_URL: ${{ secrets.PIXAZO_BASE_URL }}
       PIXAZO_IMAGE_MODEL: ${{ secrets.PIXAZO_IMAGE_MODEL }}
-      VIDEO_ID: ${{ github.event.client_payload.video_id || inputs.video_id }}
+      VIDEO_ID: ${{ github.event.client_payload.video_id }}
       USER_ID: ${{ github.event.client_payload.user_id }}
-      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
+      PROMPT: ${{ github.event.client_payload.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
       VOICE_GENDER: ${{ github.event.client_payload.voice_gender }}
       IMAGE_STYLE: ${{ github.event.client_payload.image_style }}
