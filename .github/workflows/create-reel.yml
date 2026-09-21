@@ -1,4 +1,4 @@
-name: Create Reel (Short Form)
+name: Create Reel
 run-name: ${{ format('📱 Reel: {0}', github.event.client_payload.prompt) }}
 
 on:
