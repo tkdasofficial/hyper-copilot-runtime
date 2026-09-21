@@ -1,4 +1,5 @@
 name: Video Agent Dual-Engine Runner
+run-name: ${{ (github.event.action == 'long_form' || github.event.client_payload.mode == 'long') && format('🎬 Long-Form: {0}', github.event.client_payload.prompt) || format('📱 Short-Form: {0}', github.event.client_payload.prompt) }}
 
 on:
   repository_dispatch:
