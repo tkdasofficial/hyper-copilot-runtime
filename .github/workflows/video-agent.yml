@@ -39,6 +39,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -70,6 +71,11 @@ jobs:
             -H "x-upsert: true" \
             --data-binary @out.mp4
 
+      - name: Export Video to Google Drive
+        if: success()
+        run: |
+          python editor/export_to_drive.py || true
+
       - name: Mark completed in Supabase
         run: |
           curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
@@ -89,6 +95,10 @@ jobs:
 
   # --------------------------------------------------------------------------
   # Long-Form Engine (editor / HyperEditor C++ Headless)
+  # Brain: NVIDIA NIM API (meta/llama-3.1-70b-instruct)
+  # Footages: Pexels & Pixabay 1080p Video APIs
+  # Ducking & Subtitles: C++ Headless HyperEditor Canvas
+  # Export: Google Drive
   # --------------------------------------------------------------------------
   render-long-form:
     if: github.event.action == 'long_form' || github.event.client_payload.mode == 'long'
@@ -97,8 +107,13 @@ jobs:
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+      GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
+      GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
+      GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       VIDEO_ID: ${{ github.event.client_payload.video_id }}
@@ -116,6 +131,7 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -145,7 +161,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"status":"processing","step":"Initializing Long-Form Engine","progress":5}'
 
-      - name: Execute Long-Form Video Pipeline (Pexels, Pixabay, Ducking & C++ Editor)
+      - name: Execute Long-Form Video Pipeline (NVIDIA Brain, Pexels/Pixabay & C++ Editor)
         run: python editor/long_form_pipeline.py
 
       - name: Upload Master MP4 to Supabase Storage
@@ -160,6 +176,11 @@ jobs:
               -H "x-upsert: true" \
               --data-binary @out.mp4
           fi
+
+      - name: Export Rendered Video to Google Drive
+        if: success()
+        run: |
+          python editor/export_to_drive.py || true
 
       - name: Mark failed
         if: failure()

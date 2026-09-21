@@ -1,10 +1,11 @@
 """
-Long-Form Video Pipeline for Hyper Copilot
-Integrates 1080p Asset Sourcing (Pexels & Pixabay APIs), Edge TTS,
-Audio Ducking, and the native C++ Headless Editor (HyperEditor).
-Canvas: 16:9 (1920x1080)
-Target: 1080p @ 60fps with 30fps fallback
-Duration: 1 to 15 minutes with flexible duration logic
+Long-Form Video Pipeline for Hyper Copilot.
+Orchestrates:
+1. Brain: NVIDIA API Key (NVIDIA NIM - meta/llama-3.1-70b-instruct) for documentary scriptwriting & scene planning
+2. Stock Footages: Pexels & Pixabay APIs for 1080p video sourcing
+3. Audio: Edge-TTS narration & ambient soundtrack with DSP Auto-Ducking
+4. Editor: Native C++ Headless Editor (HyperEditor) for 1080p @ 60fps rendering
+5. Export: Direct Google Drive export & Supabase video status streaming
 """
 
 import os
@@ -19,12 +20,12 @@ import subprocess
 import requests
 
 # --- Configuration & Environment --------------------------------------------
-
 def env(name: str, default: str = "") -> str:
     return (os.environ.get(name) or "").strip() or default
 
 SUPABASE_URL = env("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY")
+NVIDIA_API_KEY = env("NVIDIA_API_KEY")
 PEXELS_API_KEY = env("PEXELS_API_KEY")
 PIXABAY_API_KEY = env("PIXABAY_API_KEY")
 CLOUDFLARE_ACCOUNT_ID = env("CLOUDFLARE_ACCOUNT_ID")
@@ -44,7 +45,6 @@ HEIGHT = 1080
 # Determine Target Duration (Minutes / Seconds)
 raw_sec = env("DURATION_SECONDS")
 raw_min = env("DURATION_MINUTES")
-
 if raw_min and raw_min.isdigit():
     TARGET_MINUTES = max(1, min(15, int(raw_min)))
 elif raw_sec and raw_sec.isdigit():
@@ -74,9 +74,7 @@ try:
 except ValueError:
     CAPTION_SCALE = 4
 
-
 # --- Supabase Progress Reporting --------------------------------------------
-
 def patch_supabase(payload: dict) -> None:
     if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY and VIDEO_ID):
         return
@@ -104,63 +102,105 @@ def log(message: str, step: str | None = None, progress: int | None = None) -> N
         payload["progress"] = progress
     patch_supabase(payload)
 
-
-# --- Stage 1: Narrative Script Generation -----------------------------------
-
+# --- Stage 1: Narrative Brain (NVIDIA API / NIM) ----------------------------
 def get_edge_tts_voice(gender: str) -> str:
     if gender.startswith("f"):
         return "en-US-JennyNeural"
     return "en-US-ChristopherNeural"
 
-def generate_script_prompt(prompt: str, target_sec: float) -> str:
-    approx_words = int(target_sec * 2.2)
+def generate_script_with_nvidia_brain() -> tuple[str, list[dict]]:
+    """
+    Uses NVIDIA NIM API as the director brain to generate:
+    1. Documentary voiceover narration script matching target duration.
+    2. Scene-by-scene breakdown with targeted Pexels & Pixabay search queries.
+    """
+    approx_words = int(TARGET_DURATION_SEC * 2.2)
     min_words = int(MIN_DURATION_SEC * 2.0)
     max_words = int(MAX_DURATION_SEC * 2.4)
-    return (
-        f"Write an immersive, educational long-form documentary script about: '{prompt}'.\n"
-        f"Total narration length should be approximately {approx_words} words (between {min_words} and {max_words} words).\n"
-        "Style: Nature, space, or cosmic documentary style. Strictly people-free narration.\n"
-        "Do not include narrator stage directions (like [Music fades] or [Scene 1]). Return only the spoken narration text."
+    target_scenes = max(4, min(30, int(TARGET_DURATION_SEC / 8.0)))
+
+    log(f"Consulting NVIDIA AI Brain for documentary blueprint ({approx_words} words, ~{target_scenes} scenes)...", "Writing script", 10)
+
+    system_prompt = (
+        "You are an award-winning cinematic documentary director, screenwriter, and visual curator. "
+        "You produce world-class nature, cosmic, and science documentaries without humans or talking heads. "
+        "Your output must be strictly valid JSON with no preamble or markdown wrappers."
     )
 
-def write_long_script() -> str:
-    log(
-        f"Generating long-form script: target {TARGET_MINUTES}m "
-        f"(window: {MIN_DURATION_SEC/60:.1f}m - {MAX_DURATION_SEC/60:.1f}m)",
-        "Writing script",
-        10
-    )
+    user_prompt = f"""Create a comprehensive long-form documentary plan.
+Topic: "{PROMPT}"
+Visual Style: {IMAGE_STYLE}. Exclude: {NEGATIVE_PROMPT}.
+Target Runtime: {TARGET_MINUTES} minutes (duration window: {MIN_DURATION_SEC/60:.1f} to {MAX_DURATION_SEC/60:.1f} minutes).
+Target Narration Words: approximately {approx_words} words (minimum {min_words}, maximum {max_words} words).
 
-    # Attempt Cloudflare Workers AI if credentials present
-    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+Provide your response as a valid JSON object strictly matching this schema:
+{{
+  "title": "Documentary Title",
+  "narration": "Full, uninterrupted, poetic documentary voiceover narration...",
+  "scenes": [
+    {{
+      "scene_id": 1,
+      "duration": 8.0,
+      "visual_description": "Descriptive visual",
+      "search_queries": ["query 1 for pexels", "query 2 for pixabay"]
+    }}
+  ]
+}}
+Ensure the 'scenes' array has approximately {target_scenes} distinct scenes covering the entire narrative arc.
+The 'search_queries' for each scene must be highly specific English terms optimized for stock video search (e.g. 'deep ocean hydrothermal vent 4k', 'nebula cosmic stars timelapse').
+"""
+
+    models_to_try = [
+        "meta/llama-3.1-70b-instruct",
+        "nvidia/llama-3.1-nemotron-70b-instruct",
+        "meta/llama-3.3-70b-instruct",
+        "meta/llama-3.1-8b-instruct",
+    ]
+
+    for model in models_to_try:
         try:
-            url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/meta/llama-3.1-8b-instruct"
-            headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
-            body = {
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are an award-winning nature & science documentary scriptwriter like David Attenborough or Neil deGrasse Tyson."
-                    },
-                    {
-                        "role": "user",
-                        "content": generate_script_prompt(PROMPT, TARGET_DURATION_SEC)
-                    }
-                ],
-                "max_tokens": 2048,
+            log(f"Calling NVIDIA NIM Brain ({model})...")
+            url = "https://integrate.api.nvidia.com/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {NVIDIA_API_KEY}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
             }
-            res = requests.post(url, headers=headers, json=body, timeout=45)
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.6,
+                "max_tokens": 4096,
+                "response_format": {"type": "json_object"},
+            }
+            res = requests.post(url, headers=headers, json=payload, timeout=60)
             if res.ok:
                 data = res.json()
-                text = data.get("result", {}).get("response", "").strip()
-                if len(text.split()) >= int(MIN_DURATION_SEC * 1.5):
-                    log(f"Script generated via Workers AI ({len(text.split())} words)", progress=20)
-                    return text
-        except Exception as e:
-            log(f"Cloudflare script generation skipped: {e}")
+                content = data["choices"][0]["message"]["content"].strip()
+                # Clean potential markdown wrapping
+                if content.startswith("```"):
+                    content = content.split("\n", 1)[-1]
+                    if content.endswith("```"):
+                        content = content.rsplit("```", 1)[0]
+                    content = content.strip()
 
-    # High-quality procedural script generation fallback
-    log("Assembling comprehensive documentary narrative...", progress=20)
+                parsed = json.loads(content)
+                narration = parsed.get("narration", "").strip()
+                scenes = parsed.get("scenes", [])
+                if narration and len(narration.split()) >= min_words * 0.7:
+                    log(f"NVIDIA Brain successfully generated screenplay: {len(narration.split())} words, {len(scenes)} scenes.", progress=20)
+                    return narration, scenes
+        except Exception as e:
+            log(f"NVIDIA model {model} attempt notice: {e}")
+
+    # Fallback if NVIDIA API is not configured or fails
+    return write_procedural_fallback_script()
+
+def write_procedural_fallback_script() -> tuple[str, list[dict]]:
+    log("Assembling comprehensive documentary narrative via procedural engine...", progress=18)
     sections = [
         f"Across the boundless expanse of our natural universe, {PROMPT} unfolds with breathtaking majesty and intricate design.",
         f"In these extraordinary realms, subtle patterns of light, motion, and energy weave together a tapestry rarely witnessed in ordinary human experience.",
@@ -173,7 +213,6 @@ def write_long_script() -> str:
         f"As twilight settles over the horizon, the night sky awakens with constellations, nebulae, and drifting star fields that illuminate the quiet earth below.",
         f"In this undisturbed sanctuary of natural splendor, the journey of {PROMPT} continues, timeless, sublime, and ever evolving into tomorrow."
     ]
-
     needed_words = int(TARGET_DURATION_SEC * 2.2)
     script_parts = []
     current_words = 0
@@ -184,18 +223,28 @@ def write_long_script() -> str:
         current_words += len(part.split())
         idx += 1
 
-    return "\n\n".join(script_parts)
-
+    narration = "\n\n".join(script_parts)
+    # Generate procedural scenes
+    target_scenes = max(4, min(24, int(TARGET_DURATION_SEC / 8.0)))
+    keywords = extract_keywords(PROMPT)
+    scenes = []
+    for s_idx in range(target_scenes):
+        kw = keywords[s_idx % len(keywords)]
+        scenes.append({
+            "scene_id": s_idx + 1,
+            "duration": 8.0,
+            "visual_description": f"Cinematic {kw} vista",
+            "search_queries": [f"{kw} 4k landscape", f"nature {kw} aerial drone", f"{kw} cinematic cinematic"]
+        })
+    return narration, scenes
 
 # --- Stage 2: Narration Voice Synthesis (Edge TTS) -------------------------
-
 def generate_voiceover(script: str, output_path: str = "assets/voice.mp3") -> float:
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     voice = get_edge_tts_voice(VOICE_GENDER)
     log(f"Synthesizing high-definition narration with Edge TTS ({voice})", "Generating voice", 30)
 
     clean_text = " ".join(script.split())
-    # Run edge-tts CLI
     cmd = [
         "edge-tts",
         "--voice", voice,
@@ -204,8 +253,7 @@ def generate_voiceover(script: str, output_path: str = "assets/voice.mp3") -> fl
     ]
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-        log(f"Edge TTS fallback: {res.stderr}")
-        # Generate silence / fallback tone if edge-tts fails
+        log(f"Edge TTS fallback triggered: {res.stderr}")
         subprocess.run([
             "ffmpeg", "-y", "-f", "lavfi",
             "-i", f"anullsrc=r=48000:cl=stereo",
@@ -213,7 +261,6 @@ def generate_voiceover(script: str, output_path: str = "assets/voice.mp3") -> fl
             output_path
         ], check=True)
 
-    # Probe duration
     probe = subprocess.run(
         [
             "ffprobe", "-v", "error",
@@ -224,194 +271,198 @@ def generate_voiceover(script: str, output_path: str = "assets/voice.mp3") -> fl
         capture_output=True, text=True, check=True
     )
     duration = float(probe.stdout.strip() or TARGET_DURATION_SEC)
-    log(f"Voiceover track ready ({duration:.1f}s)", progress=45)
+    log(f"Voiceover track synthesized ({duration:.1f}s)", progress=45)
     return duration
 
-
-# --- Stage 3: Asset Sourcing via Pexels & Pixabay (1080p) ------------------
-
+# --- Stage 3: Stock Footage Sourcing (Pexels & Pixabay 1080p) ---------------
 def extract_keywords(prompt: str) -> list[str]:
     stop_words = {"the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "with", "about", "into", "of"}
     words = [w.strip(".,;:!?()\"'") for w in prompt.lower().split() if w not in stop_words and len(w) > 2]
-    if not words:
-        return ["nature", "galaxy", "ocean", "landscape", "stars", "mountains"]
-    return words
+    return words or ["nature", "galaxy", "ocean", "landscape", "stars", "nebula"]
 
-def fetch_pexels_videos(query: str, count: int = 5) -> list[str]:
+def search_pexels_video(query: str) -> str | None:
     if not PEXELS_API_KEY:
-        return []
+        return None
     try:
-        url = f"https://api.pexels.com/videos/search?query={requests.utils.quote(query)}&orientation=landscape&size=large&per_page={count}"
+        url = f"https://api.pexels.com/videos/search?query={requests.utils.quote(query)}&orientation=landscape&size=large&per_page=6"
         headers = {"Authorization": PEXELS_API_KEY}
-        r = requests.get(url, headers=headers, timeout=15)
-        if not r.ok:
-            return []
-        data = r.json()
-        video_urls = []
-        for v in data.get("videos", []):
-            files = v.get("video_files", [])
-            # Prioritize 1080p files
-            hd_files = [f for f in files if f.get("width") == 1920 and f.get("height") == 1080]
-            if not hd_files:
-                hd_files = [f for f in files if (f.get("width") or 0) >= 1280]
-            if hd_files and hd_files[0].get("link"):
-                video_urls.append(hd_files[0]["link"])
-        return video_urls
+        r = requests.get(url, headers=headers, timeout=12)
+        if r.ok:
+            data = r.json()
+            for v in data.get("videos", []):
+                files = v.get("video_files", [])
+                # 1. Look for exact 1080p
+                for f in files:
+                    if f.get("width") == 1920 and f.get("height") == 1080 and f.get("link"):
+                        return f["link"]
+                # 2. Look for any HD file (1280+)
+                for f in files:
+                    if (f.get("width") or 0) >= 1280 and f.get("link"):
+                        return f["link"]
     except Exception as e:
-        print(f"[Pexels] Video search error: {e}", file=sys.stderr)
-        return []
-
-def fetch_pixabay_videos(query: str, count: int = 5) -> list[str]:
-    if not PIXABAY_API_KEY:
-        return []
-    try:
-        url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q={requests.utils.quote(query)}&video_type=film&orientation=horizontal&per_page={count}"
-        r = requests.get(url, timeout=15)
-        if not r.ok:
-            return []
-        data = r.json()
-        video_urls = []
-        for v in data.get("hits", []):
-            videos = v.get("videos", {})
-            # Check large or medium video
-            link = videos.get("large", {}).get("url") or videos.get("medium", {}).get("url")
-            if link:
-                video_urls.append(link)
-        return video_urls
-    except Exception as e:
-        print(f"[Pixabay] Video search error: {e}", file=sys.stderr)
-        return []
-
-def fetch_image_asset(query: str) -> str | None:
-    if PEXELS_API_KEY:
-        try:
-            url = f"https://api.pexels.com/v1/search?query={requests.utils.quote(query)}&orientation=landscape&per_page=5"
-            r = requests.get(url, headers={"Authorization": PEXELS_API_KEY}, timeout=10)
-            if r.ok:
-                photos = r.json().get("photos", [])
-                if photos and photos[0].get("src", {}).get("large2x"):
-                    return photos[0]["src"]["large2x"]
-        except Exception:
-            pass
-
-    if PIXABAY_API_KEY:
-        try:
-            url = f"https://pixabay.com/api/?key={PIXABAY_API_KEY}&q={requests.utils.quote(query)}&image_type=photo&orientation=horizontal&per_page=5"
-            r = requests.get(url, timeout=10)
-            if r.ok:
-                hits = r.json().get("hits", [])
-                if hits and hits[0].get("largeImageURL"):
-                    return hits[0]["largeImageURL"]
-        except Exception:
-            pass
-
+        print(f"[Pexels] Search error for '{query}': {e}", file=sys.stderr)
     return None
 
-def download_asset(url: str, target_path: str) -> bool:
+def search_pixabay_video(query: str) -> str | None:
+    if not PIXABAY_API_KEY:
+        return None
+    try:
+        url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q={requests.utils.quote(query)}&video_type=film&orientation=horizontal&per_page=6"
+        r = requests.get(url, timeout=12)
+        if r.ok:
+            data = r.json()
+            for hit in data.get("hits", []):
+                vids = hit.get("videos", {})
+                for res_key in ("large", "medium", "small"):
+                    if vids.get(res_key, {}).get("url"):
+                        return vids[res_key]["url"]
+    except Exception as e:
+        print(f"[Pixabay] Search error for '{query}': {e}", file=sys.stderr)
+    return None
+
+def download_and_normalize_clip(url: str, output_path: str, duration: float, fps: float = 60.0) -> bool:
+    temp_download = output_path + ".download"
     try:
         r = requests.get(url, stream=True, timeout=30)
-        if r.ok:
-            with open(target_path, "wb") as f:
-                shutil.copyfileobj(r.raw, f)
-            return True
+        if not r.ok:
+            return False
+        with open(temp_download, "wb") as f:
+            for chunk in r.iter_content(chunk_size=65536):
+                f.write(chunk)
+
+        # Transcode & normalize to exact 1920x1080 @ target fps with color grading
+        vf = (
+            f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,"
+            f"crop={WIDTH}:{HEIGHT},"
+            f"fps={fps},"
+            f"eq=contrast=1.08:saturation=1.12:brightness=0.01"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", temp_download,
+            "-t", str(round(duration, 2)),
+            "-vf", vf,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            output_path
+        ]
+        res = subprocess.run(cmd, capture_output=True)
+        if os.path.exists(temp_download):
+            os.remove(temp_download)
+        return res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1000
     except Exception as e:
-        print(f"Download failed for {url}: {e}", file=sys.stderr)
-    return False
+        print(f"[AssetNormalization] Error: {e}", file=sys.stderr)
+        if os.path.exists(temp_download):
+            os.remove(temp_download)
+        return False
 
-def source_1080p_assets(total_duration: float) -> list[dict]:
-    log("Sourcing high-definition 1080p assets from Pexels & Pixabay...", "Sourcing assets", 50)
-    os.makedirs("assets", exist_ok=True)
-    keywords = extract_keywords(PROMPT)
+def generate_procedural_scene(output_path: str, duration: float, scene_idx: int, fps: float = 60.0) -> str:
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    colors = [
+        ("0x050d1a", "0x1b3b6f"),
+        ("0x11052C", "0x3D087B"),
+        ("0x0B2027", "0x40798C"),
+        ("0x081c15", "0x1b4332"),
+        ("0x1a0933", "0x592e83"),
+    ]
+    c1, c2 = colors[scene_idx % len(colors)]
+    vf = (
+        f"nullsrc=s={WIDTH}x{HEIGHT}:d={duration}:r={fps},"
+        f"format=yuv420p,"
+        f"drawbox=y=0:color={c1}:width=iw:height=ih:t=fill,"
+        f"noise=alls=15:allf=t+u,"
+        f"eq=contrast=1.1:saturation=1.2"
+    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", vf,
+        "-t", str(round(duration, 2)),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-an",
+        output_path
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+    return output_path
 
-    # Estimate scene count: each scene ~6 to 10 seconds
-    avg_scene_len = 8.0
-    num_scenes = max(3, math.ceil(total_duration / avg_scene_len))
-    scene_duration = total_duration / num_scenes
-
+def source_1080p_assets(scenes_plan: list[dict], total_duration: float, fps: float = 60.0) -> list[dict]:
+    os.makedirs("assets/scenes", exist_ok=True)
     scene_clips = []
+    
+    # Calculate scene distribution
+    num_scenes = max(3, len(scenes_plan))
+    per_scene_dur = max(6.0, total_duration / num_scenes)
+    
+    log(f"Sourcing stock footage for {num_scenes} scenes via Pexels & Pixabay (1080p @ {fps:.0f} FPS)...", "Sourcing stock footage", 50)
+    
     current_time = 0.0
+    for idx, scene in enumerate(scenes_plan):
+        scene_dur = min(per_scene_dur, total_duration - current_time)
+        if scene_dur <= 1.0:
+            break
+            
+        clip_path = f"assets/scenes/scene_{idx:03d}.mp4"
+        queries = scene.get("search_queries", [])
+        if not queries:
+            queries = [f"{w} landscape" for w in extract_keywords(PROMPT)[:2]]
 
-    # Search media across keywords
-    found_urls = []
-    for kw in keywords[:4]:
-        found_urls.extend(fetch_pexels_videos(kw, count=4))
-        found_urls.extend(fetch_pixabay_videos(kw, count=4))
+        video_url = None
+        source_provider = "Procedural"
+        
+        # 1. Try Pexels Video Search with queries
+        for q in queries:
+            video_url = search_pexels_video(q)
+            if video_url:
+                source_provider = f"Pexels ('{q}')"
+                break
+                
+        # 2. Try Pixabay Video Search if not found
+        if not video_url:
+            for q in queries:
+                video_url = search_pixabay_video(q)
+                if video_url:
+                    source_provider = f"Pixabay ('{q}')"
+                    break
 
-    # Remove duplicates
-    unique_urls = list(dict.fromkeys(found_urls))
-    log(f"Found {len(unique_urls)} verified 1080p footage assets for prompt", progress=60)
+        # 3. Download and normalize clip
+        success = False
+        if video_url:
+            success = download_and_normalize_clip(video_url, clip_path, scene_dur, fps=fps)
+            if success:
+                log(f"Scene {idx+1}/{num_scenes}: Sourced 1080p footage from {source_provider} ({scene_dur:.1f}s)")
 
-    for i in range(num_scenes):
-        asset_file = f"assets/clip_{i}.mp4"
-        asset_sourced = False
-
-        if i < len(unique_urls):
-            asset_sourced = download_asset(unique_urls[i], asset_file)
-
-        if not asset_sourced:
-            # Try fetching high-res still image as video clip
-            img_url = fetch_image_asset(keywords[i % len(keywords)])
-            img_file = f"assets/scene_img_{i}.jpg"
-            if img_url and download_asset(img_url, img_file):
-                # Convert still image to 1080p video clip with lanczos filter
-                subprocess.run([
-                    "ffmpeg", "-y", "-loop", "1", "-i", img_file,
-                    "-t", str(scene_duration + 1.0),
-                    "-vf", f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT}",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", asset_file
-                ], capture_output=True)
-                asset_sourced = os.path.exists(asset_file)
-
-        if not asset_sourced:
-            # Procedural fallback: Generate cinematic animated gradient pattern
-            hue = (i * 45) % 360
-            subprocess.run([
-                "ffmpeg", "-y", "-f", "lavfi",
-                "-i", f"color=c=0x111827:s={WIDTH}x{HEIGHT}:d={scene_duration + 1.0}",
-                "-vf", f"drawbox=y=ih*0.3:color=0x38bdf8@0.15:t=max,noise=alls=10:allf=t",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", asset_file
-            ], capture_output=True)
+        # 4. Fallback if stock footage download failed
+        if not success:
+            generate_procedural_scene(clip_path, scene_dur, idx, fps=fps)
+            log(f"Scene {idx+1}/{num_scenes}: Generated cinematic procedural canvas ({scene_dur:.1f}s)")
 
         scene_clips.append({
-            "id": f"scene_{i}",
-            "file": asset_file,
-            "track": 0,
+            "id": f"scene_{idx}",
+            "file": os.path.abspath(clip_path),
             "start": round(current_time, 2),
-            "duration": round(scene_duration, 2),
-            "source_offset": 0.0,
-            "motion_zoom": {
-                "enabled": True,
-                "start_pan_x": 0.5,
-                "start_pan_y": 0.5,
-                "start_zoom": 1.0,
-                "end_pan_x": 0.5 + (0.05 if i % 2 == 0 else -0.05),
-                "end_pan_y": 0.5 + (0.03 if i % 2 == 0 else -0.03),
-                "end_zoom": 1.15
-            },
-            "transition_in": {"type": "crossfade", "duration": 0.6},
-            "transition_out": {"type": "crossfade", "duration": 0.6},
-            "frame_scaler": {
-                "width": WIDTH,
-                "height": HEIGHT,
-                "mode": "smart_crop"
+            "duration": round(scene_dur, 2),
+            "transition_in": "crossfade" if idx > 0 else "none",
+            "transition_duration": 0.8 if idx > 0 else 0.0,
+            "motion": {
+                "type": "zoom_in" if idx % 2 == 0 else "pan_right",
+                "intensity": 0.08
             },
             "color_grading": {
-                "brightness": 0.02,
                 "contrast": 1.08,
-                "saturation": 1.12
+                "saturation": 1.15,
+                "temperature": 0.02
             }
         })
-        current_time += scene_duration
+        current_time += scene_dur
 
     return scene_clips
 
-
-# --- Stage 4: Soundtrack & Auto-Ducking Mix ---------------------------------
-
-def generate_ambient_soundtrack(duration: float, output_path: str = "assets/music.wav") -> str:
-    log("Synthesizing ambient documentary background score...", progress=65)
+# --- Stage 4: Soundtrack with Auto-Ducking -----------------------------------
+def generate_ambient_soundtrack(duration: float, output_path: str = "assets/soundtrack.wav") -> str:
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    # Generate warm, peaceful cinematic ambient chord drone using ffmpeg
+    log(f"Synthesizing dynamic documentary ambient score with DSP auto-ducking ({duration:.1f}s)", "Generating score", 65)
+    
     cmd = [
         "ffmpeg", "-y", "-f", "lavfi",
         "-i", f"sine=frequency=110:duration={duration + 2.0}",
@@ -420,16 +471,14 @@ def generate_ambient_soundtrack(duration: float, output_path: str = "assets/musi
         "-f", "lavfi",
         "-i", f"sine=frequency=220:duration={duration + 2.0}",
         "-filter_complex",
-        "[0:a][1:a][2:a]amix=inputs=3:dropout_transition=2,volume=0.35,lowpass=f=800,afade=t=in:ss=0:d=3,afade=t=out:st={duration}:d=2[out]",
+        f"[0:a][1:a][2:a]amix=inputs=3:dropout_transition=2,volume=0.35,lowpass=f=800,afade=t=in:ss=0:d=3,afade=t=out:st={duration}:d=2[out]",
         "-map", "[out]",
         output_path
     ]
     subprocess.run(cmd, capture_output=True)
     return output_path
 
-
-# --- Stage 5: Timeline JSON Assembly ---------------------------------------
-
+# --- Stage 5: Timeline Assembly for C++ Engine ------------------------------
 def build_timeline_json(
     scene_clips: list[dict],
     voice_path: str,
@@ -452,7 +501,7 @@ def build_timeline_json(
         "audio_tracks": [
             {
                 "id": "bg_soundtrack",
-                "file": music_path,
+                "file": os.path.abspath(music_path),
                 "start": 0.0,
                 "duration": round(total_duration, 2),
                 "volume": 0.7,
@@ -472,7 +521,7 @@ def build_timeline_json(
             },
             {
                 "id": "voiceover_track",
-                "file": voice_path,
+                "file": os.path.abspath(voice_path),
                 "start": 0.5,
                 "duration": round(total_duration, 2),
                 "volume": 1.0,
@@ -486,7 +535,6 @@ def build_timeline_json(
         ]
     }
 
-    # Optional dynamic captions
     if CAPTIONS_ENABLED:
         timeline["captions"] = [
             {
@@ -509,16 +557,13 @@ def build_timeline_json(
 
     with open(timeline_path, "w") as f:
         json.dump(timeline, f, indent=2)
-
     return timeline_path
 
-
 # --- Stage 6: Headless C++ Engine Execution --------------------------------
-
 def compile_engine_if_needed() -> str:
     engine_bin = os.path.abspath("editor/build/hyper_editor")
     if not os.path.exists(engine_bin):
-        log("Compiling C++ Headless Editor engine...", "Compiling C++ engine", 70)
+        log("Compiling native C++ Headless Editor engine...", "Compiling C++ engine", 70)
         os.makedirs("editor/build", exist_ok=True)
         subprocess.run(["cmake", "-DCMAKE_BUILD_TYPE=Release", ".."], cwd="editor/build", check=True)
         subprocess.run(["make", "-j4"], cwd="editor/build", check=True)
@@ -528,25 +573,70 @@ def execute_cpp_engine(engine_bin: str, timeline_path: str, fps: float = 60.0) -
     log(f"Launching C++ Headless Editor @ {fps:.0f} FPS (1080p Master Canvas)", "Rendering video", 75)
     cmd = [engine_bin, "--timeline", timeline_path, "--output", "out.mp4"]
     proc = subprocess.run(cmd, capture_output=True, text=True)
-
     if proc.returncode == 0 and os.path.exists("out.mp4") and os.path.getsize("out.mp4") > 1000:
-        log("C++ Headless rendering completed successfully!", progress=90)
+        log(f"C++ Headless rendering completed successfully @ {fps:.0f} FPS!", progress=90)
         return True
-
-    print(f"[HyperEditor] Error: {proc.stderr}", file=sys.stderr)
+    print(f"[HyperEditor] Notice: {proc.stderr}", file=sys.stderr)
     return False
 
+# --- Stage 7: Export to Google Drive ---------------------------------------
+def export_video_to_google_drive(video_path: str = "out.mp4") -> str | None:
+    """
+    Exports the rendered MP4 to Google Drive via the Supabase upload-to-drive Edge Function.
+    """
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        log("Google Drive Export skipped: Supabase credentials not found.")
+        return None
+
+    clean_name = "".join(c for c in PROMPT if c.isalnum() or c in (" ", "-", "_")).strip()
+    filename = (clean_name[:45] or "documentary").replace(" ", "_") + ".mp4"
+
+    log(f"Exporting rendered video to Google Drive ('{filename}')...", "Exporting to Drive", 96)
+    
+    url = f"{SUPABASE_URL}/functions/v1/upload-to-drive"
+    try:
+        with open(video_path, "rb") as f:
+            files = {"file": (filename, f, "video/mp4")}
+            data = {"folder": "Videos"}
+            headers = {"Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}"}
+            res = requests.post(url, headers=headers, files=files, data=data, timeout=300)
+
+        if res.ok:
+            data = res.json()
+            file_obj = data.get("file") or {}
+            drive_link = file_obj.get("webViewLink") or file_obj.get("directDownloadUrl") or f"https://drive.google.com/file/d/{file_obj.get('id')}/view"
+            log(f"Exported to Google Drive successfully: {drive_link}", "Exported to Drive", 98)
+            
+            # Write to GitHub Step Summary if running in Actions
+            summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+            if summary_path:
+                try:
+                    with open(summary_path, "a", encoding="utf-8") as sf:
+                        sf.write(f"\n### 🎬 Video Exported to Google Drive\n")
+                        sf.write(f"- **Filename**: `{filename}`\n")
+                        sf.write(f"- **Google Drive**: [Open Video in Google Drive]({drive_link})\n\n")
+                except Exception:
+                    pass
+            return drive_link
+        else:
+            log(f"Google Drive export notice ({res.status_code}): {res.text[:200]}")
+    except Exception as e:
+        log(f"Google Drive export notice: {e}")
+    return None
 
 # --- Main Pipeline Orchestrator --------------------------------------------
-
 def main() -> int:
     try:
-        log(f"Starting Dual-Engine Long-Form Video Pipeline", "Initializing Video Engine", 5)
+        log("Starting Dual-Engine Long-Form Video Pipeline", "Initializing Video Engine", 5)
         log(f"Config: 16:9 Canvas (1920x1080) · Target {TARGET_MINUTES} min ({MIN_DURATION_SEC:.0f}s - {MAX_DURATION_SEC:.0f}s)")
         log(f"Style: {IMAGE_STYLE} · Voice: {VOICE_GENDER.title()} ({VOICE_PERSONA})")
 
-        # 1. Script
-        script = write_long_script()
+        # 1. NVIDIA Brain Screenplay & Scene Planning
+        if NVIDIA_API_KEY:
+            script, scenes_plan = generate_script_with_nvidia_brain()
+        else:
+            log("NVIDIA_API_KEY not supplied; running procedural screenwriter fallback...")
+            script, scenes_plan = write_procedural_fallback_script()
 
         # 2. Narration TTS
         voice_path = "assets/voice.mp3"
@@ -556,8 +646,8 @@ def main() -> int:
         total_duration = max(MIN_DURATION_SEC, min(MAX_DURATION_SEC, audio_dur))
         log(f"Final composition timeline locked at {total_duration:.1f} seconds ({total_duration/60:.2f} mins)", progress=48)
 
-        # 3. Assets
-        scene_clips = source_1080p_assets(total_duration)
+        # 3. Assets via Pexels & Pixabay
+        scene_clips = source_1080p_assets(scenes_plan, total_duration, fps=60.0)
 
         # 4. Music & Ducking
         music_path = generate_ambient_soundtrack(total_duration)
@@ -576,10 +666,11 @@ def main() -> int:
 
         if not success:
             # Safety net: FFmpeg direct fallback composition if C++ binary exits with failure
-            log("C++ engine returned non-zero code; running FFmpeg master stream fallback...", progress=85)
+            log("Running FFmpeg master stream fallback composition...", progress=85)
+            first_clip = scene_clips[0]["file"] if scene_clips else "assets/scenes/scene_000.mp4"
             cmd_fb = [
                 "ffmpeg", "-y",
-                "-i", scene_clips[0]["file"],
+                "-stream_loop", "-1", "-i", first_clip,
                 "-i", voice_path,
                 "-i", music_path,
                 "-filter_complex",
@@ -592,7 +683,7 @@ def main() -> int:
             subprocess.run(cmd_fb, check=True)
 
         # 7. Upload to Supabase Storage
-        log("Uploading master MP4 to private Supabase Storage bucket...", "Uploading video", 95)
+        log("Uploading master MP4 to private Supabase Storage bucket...", "Uploading video", 93)
         if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
             with open("out.mp4", "rb") as f:
                 upload_res = requests.post(
@@ -604,19 +695,26 @@ def main() -> int:
                         "x-upsert": "true",
                     },
                     data=f,
-                    timeout=120,
+                    timeout=180,
                 )
             if not upload_res.ok:
                 log(f"Upload warning: {upload_res.status_code} {upload_res.text[:200]}")
 
-            patch_supabase({
-                "status": "completed",
-                "progress": 100,
-                "step": "Finished",
-                "video_url": f"{USER_ID}/{VIDEO_ID}.mp4",
-            })
+        # 8. Export to Google Drive
+        drive_link = export_video_to_google_drive("out.mp4")
 
-        log(f"Video ready · Duration: {total_duration:.1f}s", "Finished", 100)
+        # Mark completed in Supabase
+        completion_payload = {
+            "status": "completed",
+            "progress": 100,
+            "step": "Finished",
+            "video_url": f"{USER_ID}/{VIDEO_ID}.mp4",
+        }
+        if drive_link:
+            completion_payload["logs"] = f"Render complete! Google Drive: {drive_link}"
+
+        patch_supabase(completion_payload)
+        log(f"Video ready · Duration: {total_duration:.1f}s ({total_duration/60:.2f}m)" + (f" · Drive: {drive_link}" if drive_link else ""), "Finished", 100)
         return 0
 
     except Exception as e:
