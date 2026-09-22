@@ -190,14 +190,35 @@ async function searchStockClip(query) {
 }
 
 async function synthesizeNarration(text, destAudioPath) {
-  // Using native edge-tts CLI tool if available
+  const audioDir = path.dirname(destAudioPath);
+  if (!fs.existsSync(audioDir)) {
+    fs.mkdirSync(audioDir, { recursive: true });
+  }
+
   const voice = VOICE_GENDER === 'female' ? 'en-US-AriaNeural' : 'en-US-GuyNeural';
+  const scriptPath = path.join(audioDir, 'narration_script.txt');
+  fs.writeFileSync(scriptPath, text, 'utf-8');
+
+  // Try edge-tts CLI tool if available
   try {
-    execSync(`edge-tts --voice ${voice} --text "${text.replace(/"/g, '\\"')}" --write-media "${destAudioPath}"`, { stdio: 'ignore' });
-    return true;
+    execSync(`edge-tts --voice "${voice}" -f "${scriptPath}" --write-media "${destAudioPath}"`, { stdio: 'ignore' });
+    if (fs.existsSync(destAudioPath) && fs.statSync(destAudioPath).size > 1000) {
+      console.log(`[TTS] Edge-TTS synthesized narration successfully (${fs.statSync(destAudioPath).size} bytes).`);
+      return true;
+    }
   } catch (err) {
-    console.warn(`edge-tts failed or not present, creating procedural audio tone...`);
-    execSync(`ffmpeg -y -f lavfi -i "sine=frequency=440:duration=${Math.max(3, DURATION_SECONDS)}" -c:a aac -b:a 128k "${destAudioPath}"`, { stdio: 'ignore' });
+    console.warn(`[TTS] Edge-TTS notice: ${err.message}`);
+  }
+
+  // Fallback: procedural audio tone correctly encoded for MP3 container
+  console.warn(`[TTS] Creating procedural audio tone for MP3...`);
+  const duration = Math.max(3, DURATION_SECONDS);
+  try {
+    execSync(`ffmpeg -y -f lavfi -i "sine=frequency=440:duration=${duration}" -c:a libmp3lame -b:a 128k "${destAudioPath}"`, { stdio: 'ignore' });
+    return false;
+  } catch (toneErr) {
+    console.warn(`[TTS] Procedural tone retry without explicit codec...`);
+    execSync(`ffmpeg -y -f lavfi -i "sine=frequency=440:duration=${duration}" "${destAudioPath}"`, { stdio: 'ignore' });
     return false;
   }
 }
@@ -264,7 +285,12 @@ async function run() {
       clips.push({ file: clipDest, duration: sc.duration });
     } else {
       console.log(`Generating visual procedural plate for scene ${i + 1}...`);
-      execSync(`ffmpeg -y -f lavfi -i "color=c=0x0d1527:s=${WIDTH}x${HEIGHT}:d=${sc.duration}:r=${RENDER_FPS}" -vf "drawtext=font='DejaVu Sans':text='${sc.query}':fontsize=48:fontcolor=white@0.3:x=(w-text_w)/2:y=(h-text_h)/2" -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${clipDest}"`, { stdio: 'ignore' });
+      const safePlateText = (sc.query || 'Scene ' + (i + 1)).replace(/[^a-zA-Z0-9_\-\s]/g, ' ').substring(0, 50);
+      try {
+        execSync(`ffmpeg -y -f lavfi -i "color=c=0x0d1527:s=${WIDTH}x${HEIGHT}:d=${sc.duration}:r=${RENDER_FPS}" -vf "drawtext=text='${safePlateText}':fontsize=48:fontcolor=white@0.3:x=(w-text_w)/2:y=(h-text_h)/2" -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${clipDest}"`, { stdio: 'ignore' });
+      } catch (vfErr) {
+        execSync(`ffmpeg -y -f lavfi -i "color=c=0x0d1527:s=${WIDTH}x${HEIGHT}:d=${sc.duration}:r=${RENDER_FPS}" -c:v libx264 -preset ultrafast -pix_fmt yuv420p "${clipDest}"`, { stdio: 'ignore' });
+      }
       clips.push({ file: clipDest, duration: sc.duration });
     }
   }
