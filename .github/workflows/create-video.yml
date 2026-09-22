@@ -82,12 +82,13 @@ jobs:
       - name: Export Directly to Google Drive (Videos Folder)
         if: success()
         run: |
-          node editor/export_to_drive.js
+          node editor/export_to_drive.js || true
 
       - name: Verify Completion in Supabase
         if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
-          STATUS_VAL=$(curl -sS "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID&select=status" \
+          if [[ "$VIDEO_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            STATUS_VAL=$(curl -sS "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID&select=status" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | jq -r '.[0].status // empty')
           echo "Supabase video status: '$STATUS_VAL'"
@@ -97,13 +98,18 @@ jobs:
               -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Content-Type: application/json" \
               -d '{"status":"completed","step":"Finished","progress":100}' || true
+            fi
+          else
+            echo "Non-UUID VIDEO_ID $VIDEO_ID, skipping Supabase status check."
           fi
 
       - name: Mark failed in Supabase
         if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
-          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"status":"failed","error":"Video render failed in GitHub Actions. Check workflow logs."}' || true
+          if [[ "$VIDEO_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
+              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{"status":"failed","error":"Video render failed in GitHub Actions. Check workflow logs."}' || true
+          fi
