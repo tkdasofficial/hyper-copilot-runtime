@@ -1,36 +1,37 @@
-name: Reel
-run-name: Reel - ${{ github.event.client_payload.prompt || inputs.prompt || github.event.client_payload.video_id || 'Render' }}
+name: Create Reel Pipeline
+run-name: Reel - ${{ github.event.client_payload.title || github.event.client_payload.prompt || inputs.prompt || 'Manual Dispatch' }}
 
 on:
   repository_dispatch:
-    types: [reel, reel_dispatch, short_form, video_agent_render]
+    types: [create-reel, create_reel]
   workflow_dispatch:
     inputs:
       prompt:
-        description: "Reel Prompt"
+        description: "Reel / Short Prompt"
         required: true
-        default: "Cinematic vertical reel about deep space mysteries"
-      captions:
-        description: "Captions toggle (true/false)"
+        default: "Futuristic neon cyberpunk city in rain"
+      negative_prompt:
+        description: "Negative Prompt"
         required: false
-        default: "true"
+        default: "blurry, distorted, low quality"
       voice_gender:
         description: "Voice Gender (male/female)"
         required: false
         default: "female"
-      duration_seconds:
-        description: "Duration in seconds"
+      voice_persona:
+        description: "Voice Persona"
         required: false
-        default: "15"
+        default: "Dynamic Storyteller"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  render-reel:
+  build-and-render-reel:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -39,75 +40,57 @@ jobs:
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       PIXAZO_API_KEY: ${{ secrets.PIXAZO_API_KEY }}
-      PIXAZO_BASE_URL: ${{ secrets.PIXAZO_BASE_URL }}
-      PIXAZO_IMAGE_MODEL: ${{ secrets.PIXAZO_IMAGE_MODEL }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      TTS_LANG: ${{ secrets.TTS_LANG }}
-      EDGE_TTS_VOICE: ${{ secrets.EDGE_TTS_VOICE }}
-      EDGE_TTS_RATE: ${{ secrets.EDGE_TTS_RATE }}
-      EDGE_TTS_PITCH: ${{ secrets.EDGE_TTS_PITCH }}
-      GOOGLE_CLOUD_API_ID: ${{ secrets.GOOGLE_CLOUD_API_ID }}
-      GOOGLE_CLOUD_API_SECRET: ${{ secrets.GOOGLE_CLOUD_API_SECRET }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-      GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN || secrets.GOOGLE_REFRESH_TOKEN }}
-      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID || secrets.GOOGLE_CLOUD_API_ID }}
-      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET || secrets.GOOGLE_CLOUD_API_SECRET }}
-      GDRIVE_DELEGATED_USER: ${{ secrets.GDRIVE_DELEGATED_USER || 'tusharkantidasofficial@gmail.com' }}
       GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID || '1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs' }}
-      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
       GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
       GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
-      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-      GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
-      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+      GDRIVE_DELEGATED_USER: ${{ secrets.GDRIVE_DELEGATED_USER || 'tusharkantidasofficial@gmail.com' }}
       VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
       USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
       PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
       VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'female' }}
       VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || 'Dynamic Storyteller' }}
-      IMAGE_STYLE: ${{ github.event.client_payload.image_style || 'Cinematic 3D' }}
-      ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '9:16' }}
-      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || inputs.duration_seconds || '15' }}
-      CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
-      CAPTION_SCALE: ${{ github.event.client_payload.caption_scale || '4' }}
-      CAPTION_SIZE: ${{ github.event.client_payload.caption_size || '' }}
-      CAPTION_STYLE: ${{ github.event.client_payload.caption_style || 'Dynamic' }}
-    steps:
-      - uses: actions/checkout@v4
+      VIDEO_STYLE: ${{ github.event.client_payload.video_style || 'Cinematic' }}
+      VIDEO_THEME: ${{ github.event.client_payload.video_theme || 'Dark Modern' }}
+      CAPTION_POSITION: ${{ github.event.client_payload.caption_position || 'bottom' }}
+      HIGHLIGHT_COLOR: ${{ github.event.client_payload.highlight_color || '#3b82f6' }}
+      WORD_ACCENT_COLOR: ${{ github.event.client_payload.word_accent_color || '#fbbf24' }}
+      ANIMATION_STYLE: ${{ github.event.client_payload.animation_style || 'pop' }}
+      WATERMARK_ENABLED: ${{ github.event.client_payload.watermark_enabled || false }}
+      WATERMARK_TEXT: ${{ github.event.client_payload.watermark_text || 'Hyper Copilot' }}
+      BG_MUSIC_VOLUME: ${{ github.event.client_payload.bg_music_volume || 0.15 }}
+      AUDIO_CROSSFADE_SEC: ${{ github.event.client_payload.audio_crossfade_sec || 0.5 }}
+      AUDIO_NORMALIZE: ${{ github.event.client_payload.audio_normalize || true }}
+      PIPELINE_MODE: "short"
+      TARGET_RATIO: "9:16"
+      RENDER_FPS: "30"
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
-      - name: Install System & C++ Dependencies
+      - name: Install system dependencies (FFmpeg & Fonts)
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y \
-            build-essential cmake pkg-config \
-            libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libavutil-dev \
-            libfreetype-dev libharfbuzz-dev nlohmann-json3-dev libomp-dev fonts-dejavu-core ffmpeg
-          pip install requests edge-tts cryptography
+          sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-dejavu-core fonts-freefont-ttf imagemagick
 
-      - name: Compile C++ Headless Editor
+      - name: Install Python dependencies
         run: |
-          mkdir -p editor/build
-          cd editor/build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-          make -j$(nproc)
-          ./hyper_editor --help || true
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install requests edge-tts pydub pillow numpy moviepy
 
-      - name: Mark processing in Supabase
-        if: env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
-        run: |
-          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"status":"processing","step":"Executing Reel Engine (9:16)","progress":10}' || true
-
-      - name: Render Reel via Primary C++ Engine Pipeline
+      - name: Run Short Reel Generator Pipeline
         run: python editor/long_form_pipeline.py
 
       - name: Export Directly to Google Drive (Videos Folder)
@@ -120,20 +103,12 @@ jobs:
         run: |
           STATUS_VAL=$(curl -sS "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID&select=status" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "")
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | jq -r '.[0].status // empty')
+          echo "Supabase video status: '$STATUS_VAL'"
           if [ "$STATUS_VAL" != "completed" ]; then
             curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
               -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Content-Type: application/json" \
-              -d '{"status":"completed","progress":100,"step":"Finished"}' || true
+              -d '{"status":"completed","step":"Finished","progress":100}' || true
           fi
-
-      - name: Mark failed
-        if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
-        run: |
-          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"status":"failed","error":"Reel render failed. Check GitHub Actions logs."}' || true

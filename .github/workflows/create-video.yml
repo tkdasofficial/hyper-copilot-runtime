@@ -1,23 +1,15 @@
-name: Video
-run-name: Video - ${{ github.event.client_payload.prompt || inputs.prompt || github.event.client_payload.video_id || 'Render' }}
+name: Create Video Pipeline
+run-name: Video - ${{ github.event.client_payload.title || github.event.client_payload.prompt || inputs.prompt || 'Manual Dispatch' }}
 
 on:
   repository_dispatch:
-    types: [video, video_dispatch, long_form, video-agent, create_video]
+    types: [create-video, create_video]
   workflow_dispatch:
     inputs:
       prompt:
-        description: "Video Prompt"
+        description: "Video Prompt / Title"
         required: true
-        default: "Epic documentary about ancient oceanic depths and geological time"
-      duration_minutes:
-        description: "Duration in minutes"
-        required: false
-        default: "2"
-      captions:
-        description: "Captions toggle (true/false)"
-        required: false
-        default: "true"
+        default: "The Mysteries of the Deep Sea Ecosystems"
       voice_gender:
         description: "Voice Gender (male/female)"
         required: false
@@ -25,83 +17,59 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  render-video:
+  build-and-render-video:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
+
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      GOOGLE_CLOUD_API_ID: ${{ secrets.GOOGLE_CLOUD_API_ID }}
-      GOOGLE_CLOUD_API_SECRET: ${{ secrets.GOOGLE_CLOUD_API_SECRET }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      PIXAZO_API_KEY: ${{ secrets.PIXAZO_API_KEY }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-      GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN || secrets.GOOGLE_REFRESH_TOKEN }}
-      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID || secrets.GOOGLE_CLOUD_API_ID }}
-      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET || secrets.GOOGLE_CLOUD_API_SECRET }}
-      GDRIVE_DELEGATED_USER: ${{ secrets.GDRIVE_DELEGATED_USER || 'tusharkantidasofficial@gmail.com' }}
       GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID || '1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs' }}
-      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
       GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
       GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
-      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-      GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
-      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+      GDRIVE_DELEGATED_USER: ${{ secrets.GDRIVE_DELEGATED_USER || 'tusharkantidasofficial@gmail.com' }}
       VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
       USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
       PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
-      NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
       VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'male' }}
-      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || 'Cosmic Documentary' }}
-      IMAGE_STYLE: ${{ github.event.client_payload.image_style || 'Cinematic Documentary' }}
-      ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '16:9' }}
-      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds }}
-      DURATION_MINUTES: ${{ github.event.client_payload.duration_minutes || inputs.duration_minutes || '2' }}
-      CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
-      CAPTION_SCALE: ${{ github.event.client_payload.caption_scale || '4' }}
-      CAPTION_SIZE: ${{ github.event.client_payload.caption_size || '' }}
-      CAPTION_STYLE: ${{ github.event.client_payload.caption_style || 'Dynamic' }}
-    steps:
-      - uses: actions/checkout@v4
+      PIPELINE_MODE: "long"
+      TARGET_RATIO: "16:9"
+      RENDER_FPS: "30"
 
-      - uses: actions/setup-python@v5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
-      - name: Install System & C++ Dependencies
+      - name: Install system dependencies (FFmpeg & Fonts)
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y \
-            build-essential cmake pkg-config \
-            libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libavutil-dev \
-            libfreetype-dev libharfbuzz-dev nlohmann-json3-dev libomp-dev fonts-dejavu-core ffmpeg
-          pip install requests edge-tts cryptography
+          sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-dejavu-core fonts-freefont-ttf imagemagick
 
-      - name: Compile C++ Headless Editor
+      - name: Install Python dependencies
         run: |
-          mkdir -p editor/build
-          cd editor/build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-          make -j$(nproc)
-          ./hyper_editor --help || true
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install requests edge-tts pydub pillow numpy moviepy
 
-      - name: Mark processing in Supabase
-        if: env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
-        run: |
-          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"status":"processing","step":"Executing Video Engine (16:9)","progress":5}' || true
-
-      - name: Execute Video Pipeline (Brain, Assets & C++ Engine)
+      - name: Run Long Form Generator Pipeline
         run: python editor/long_form_pipeline.py
 
       - name: Export Directly to Google Drive (Videos Folder)
@@ -114,20 +82,12 @@ jobs:
         run: |
           STATUS_VAL=$(curl -sS "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID&select=status" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "")
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | jq -r '.[0].status // empty')
+          echo "Supabase video status: '$STATUS_VAL'"
           if [ "$STATUS_VAL" != "completed" ]; then
             curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
               -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Content-Type: application/json" \
-              -d '{"status":"completed","progress":100,"step":"Finished"}' || true
+              -d '{"status":"completed","step":"Finished","progress":100}' || true
           fi
-
-      - name: Mark failed
-        if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
-        run: |
-          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"status":"failed","error":"Video pipeline failed. Check GitHub Actions logs."}' || true
