@@ -49,6 +49,19 @@ ALT_SA_JSON = (
     or env("GDRIVE_CREDENTIALS")
 )
 
+# User OAuth Refresh Token Credentials (Direct user quota, bypasses Service Account 403 quota)
+GOOGLE_REFRESH_TOKEN = env("GOOGLE_REFRESH_TOKEN") or env("GDRIVE_REFRESH_TOKEN")
+GOOGLE_CLIENT_ID = (
+    env("GOOGLE_CLIENT_ID")
+    or env("GOOGLE_CLOUD_API_ID")
+    or env("GDRIVE_CLIENT_ID")
+)
+GOOGLE_CLIENT_SECRET = (
+    env("GOOGLE_CLIENT_SECRET")
+    or env("GOOGLE_CLOUD_API_SECRET")
+    or env("GDRIVE_CLIENT_SECRET")
+)
+
 # Supabase Bridge (Metadata only)
 SUPABASE_URL = env("SUPABASE_URL").rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = env("SUPABASE_SERVICE_ROLE_KEY")
@@ -128,6 +141,54 @@ def parse_service_account_credentials() -> tuple[str, str]:
             k = k[start_idx:]
 
     return client_email.strip(), k.strip()
+
+def get_google_access_token_via_refresh_token(
+    refresh_token: str,
+    client_id: str,
+    client_secret: str,
+) -> str | None:
+    """
+    Exchanges a user OAuth2 Refresh Token for a fresh Google Drive access token.
+    Because this is an authorized user token, it possesses full personal Google Drive
+    storage quota and completely bypasses Service Account 403 storage quota limits.
+    """
+    if not refresh_token:
+        return None
+
+    if not client_id or not client_secret:
+        print(
+            "[DriveExport] Warning: GOOGLE_REFRESH_TOKEN provided, but GOOGLE_CLOUD_API_ID or GOOGLE_CLOUD_API_SECRET is missing.",
+            file=sys.stderr,
+        )
+        return None
+
+    print("[DriveExport] Exchanging User OAuth Refresh Token for personal Google Drive access token...")
+    try:
+        res = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=30,
+        )
+        if res.ok:
+            data = res.json()
+            token = data.get("access_token")
+            if token:
+                print("[DriveExport] User OAuth access token acquired successfully! (Personal user storage quota enabled)")
+                return token
+        else:
+            print(
+                f"[DriveExport] User Refresh Token exchange refused ({res.status_code}): {res.text[:300]}",
+                file=sys.stderr,
+            )
+    except Exception as e:
+        print(f"[DriveExport] Exception exchanging User Refresh Token: {e}", file=sys.stderr)
+    return None
+
 
 def get_google_access_token_via_service_account(
     client_email: str,
@@ -560,20 +621,32 @@ def main() -> int:
     drive_result: dict | None = None
     target_videos_folder_id = GDRIVE_VIDEOS_FOLDER_ID
 
-    client_email, private_key_pem = parse_service_account_credentials()
-
-    # 1. Try Direct Google Drive API using Service Account + Domain-Wide Delegation
-    if client_email and private_key_pem:
-        print(f"[DriveExport] Authenticating Google Service Account ({client_email}) for user '{GDRIVE_DELEGATED_USER}'...")
-        token = get_google_access_token_via_service_account(
-            client_email, private_key_pem, GDRIVE_DELEGATED_USER
+    # 1. Primary Method: User OAuth Refresh Token (Uses personal Google Drive quota, solves SA 403 quota limit)
+    if GOOGLE_REFRESH_TOKEN and GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+        user_token = get_google_access_token_via_refresh_token(
+            GOOGLE_REFRESH_TOKEN, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
         )
-        if token:
-            target_videos_folder_id = get_or_create_videos_folder(token, GDRIVE_MAIN_FOLDER_ID)
-            print(f"[DriveExport] Uploading video to 'Videos' folder ({target_videos_folder_id})...")
+        if user_token:
+            target_videos_folder_id = get_or_create_videos_folder(user_token, GDRIVE_MAIN_FOLDER_ID)
+            print(f"[DriveExport] Uploading video to 'Videos' folder ({target_videos_folder_id}) using User OAuth Token...")
             drive_result = upload_direct_to_google_drive(
-                token, VIDEO_FILE, filename, folder_id=target_videos_folder_id
+                user_token, VIDEO_FILE, filename, folder_id=target_videos_folder_id
             )
+
+    # 2. Secondary Method: Service Account Credentials (Domain-Wide Delegation or Shared Drive)
+    if not drive_result or not (drive_result.get("id") or drive_result.get("webViewLink")):
+        client_email, private_key_pem = parse_service_account_credentials()
+        if client_email and private_key_pem:
+            print(f"[DriveExport] Authenticating Google Service Account ({client_email}) for user '{GDRIVE_DELEGATED_USER}'...")
+            sa_token = get_google_access_token_via_service_account(
+                client_email, private_key_pem, GDRIVE_DELEGATED_USER
+            )
+            if sa_token:
+                target_videos_folder_id = get_or_create_videos_folder(sa_token, GDRIVE_MAIN_FOLDER_ID)
+                print(f"[DriveExport] Uploading video to 'Videos' folder ({target_videos_folder_id})...")
+                drive_result = upload_direct_to_google_drive(
+                    sa_token, VIDEO_FILE, filename, folder_id=target_videos_folder_id
+                )
 
     # 2. Try Fallback via Supabase Edge Function
     if not drive_result or not (drive_result.get("id") or drive_result.get("webViewLink")):
