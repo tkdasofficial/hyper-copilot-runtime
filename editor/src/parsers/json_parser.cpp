@@ -53,6 +53,19 @@ void JsonParser::parseTimelineSettings(const nlohmann::json& j, Core::Timeline& 
         outTimeline.outputPath = out.value("path", "output_master.mp4");
         outTimeline.sampleRate = out.value("sample_rate", 48000);
         outTimeline.channels = out.value("channels", 2);
+    } else {
+        if (j.contains("resolution")) {
+            outTimeline.width = j["resolution"].value("width", 1920);
+            outTimeline.height = j["resolution"].value("height", 1080);
+        } else {
+            outTimeline.width = j.value("width", 1920);
+            outTimeline.height = j.value("height", 1080);
+        }
+        outTimeline.fps = j.value("fps", 30.0);
+        outTimeline.duration = j.value("duration", 10.0);
+        outTimeline.outputPath = j.value("outputPath", j.value("path", "output_master.mp4"));
+        outTimeline.sampleRate = j.value("sample_rate", 48000);
+        outTimeline.channels = j.value("channels", 2);
     }
 }
 
@@ -207,7 +220,20 @@ Core::AudioEffectsConfig JsonParser::parseAudioEffects(const nlohmann::json& j) 
 }
 
 void JsonParser::parseClips(const nlohmann::json& j, Core::Timeline& outTimeline) {
-    const auto& clipsArray = j.contains("clips") ? j["clips"] : (j.contains("scenes") ? j["scenes"] : j["tracks"]);
+    nlohmann::json clipsArray = nlohmann::json::array();
+    if (j.contains("scenes") && j["scenes"].is_array()) {
+        clipsArray = j["scenes"];
+    } else if (j.contains("clips") && j["clips"].is_array()) {
+        clipsArray = j["clips"];
+    } else if (j.contains("tracks") && j["tracks"].is_array()) {
+        for (const auto& t : j["tracks"]) {
+            if (t.is_object() && t.value("type", "video") == "video" && t.contains("clips") && t["clips"].is_array()) {
+                for (const auto& c : t["clips"]) {
+                    clipsArray.push_back(c);
+                }
+            }
+        }
+    }
     if (!clipsArray.is_array()) return;
 
     for (const auto& cj : clipsArray) {
@@ -215,7 +241,7 @@ void JsonParser::parseClips(const nlohmann::json& j, Core::Timeline& outTimeline
         clip.id = cj.value("id", "clip_" + std::to_string(outTimeline.videoClips.size()));
         clip.filePath = cj.value("file", cj.value("path", ""));
         clip.trackIndex = cj.value("track", 0);
-        clip.startTime = cj.value("start_time", cj.value("start", 0.0));
+        clip.startTime = cj.value("start_time", cj.value("start", cj.value("startTime", 0.0)));
         clip.duration = cj.value("duration", 5.0);
         clip.sourceOffset = cj.value("source_offset", 0.0);
         clip.volume = cj.value("volume", 1.0);
@@ -241,17 +267,30 @@ void JsonParser::parseClips(const nlohmann::json& j, Core::Timeline& outTimeline
 }
 
 void JsonParser::parseAudioTracks(const nlohmann::json& j, Core::Timeline& outTimeline) {
-    const auto& audioArray = j.contains("audio_tracks") ? j["audio_tracks"] : j["audio"];
+    nlohmann::json audioArray = nlohmann::json::array();
+    if (j.contains("audio_tracks") && j["audio_tracks"].is_array()) {
+        audioArray = j["audio_tracks"];
+    } else if (j.contains("audio") && j["audio"].is_array()) {
+        audioArray = j["audio"];
+    } else if (j.contains("tracks") && j["tracks"].is_array()) {
+        for (const auto& t : j["tracks"]) {
+            if (t.is_object() && t.value("type", "") == "audio" && t.contains("clips") && t["clips"].is_array()) {
+                for (const auto& a : t["clips"]) {
+                    audioArray.push_back(a);
+                }
+            }
+        }
+    }
     if (!audioArray.is_array()) return;
 
     for (const auto& aj : audioArray) {
         Core::AudioTrack track;
         track.id = aj.value("id", "audio_" + std::to_string(outTimeline.audioTracks.size()));
         track.filePath = aj.value("file", aj.value("path", ""));
-        track.startTime = aj.value("start_time", aj.value("start", 0.0));
+        track.startTime = aj.value("start_time", aj.value("start", aj.value("startTime", 0.0)));
         track.duration = aj.value("duration", 0.0);
         track.volume = aj.value("volume", 1.0);
-        track.isVoiceover = aj.value("is_voiceover", false);
+        track.isVoiceover = aj.value("is_voiceover", true);
         track.duckOnVoiceover = aj.value("duck_on_voiceover", false);
         track.duckingAttenuation = aj.value("ducking_attenuation", 0.2);
         track.duckingAttackSec = aj.value("ducking_attack", 0.2);
