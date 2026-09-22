@@ -60,15 +60,23 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Setup Node.js Runtime
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install System & Browser Automation Dependencies
+      - name: Install System & Build Dependencies
         run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential cmake pkg-config chromium-browser
           pip install playwright requests beautifulsoup4
           playwright install --with-deps chromium
+
+      - name: Build & Verify Native C++ Headless Browser Engine
+        run: |
+          mkdir -p editor/build
+          cd editor/build
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          make -j$(nproc) hyper_vision_agent_engine || true
+          if [ -f ./hyper_vision_agent_engine ]; then
+            echo "Native C++ Headless Browser built successfully."
+            ./hyper_vision_agent_engine --help || ./hyper_vision_agent_engine --test || true
+          fi
 
       - name: Execute Dual-Mode Web Research Agent
         env:

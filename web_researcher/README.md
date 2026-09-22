@@ -1,6 +1,6 @@
 # Hyper Web Researcher Module (`web_researcher/`)
 
-High-Performance Dual-Mode Automated Web Research Engine with Dynamic Interactive 2FA/OTP Authentication barriers support.
+High-Performance Dual-Mode Automated Web Research Engine powered by the **Native C++ Headless Browser** (`editor/src/vision/` & `hyper_vision_agent_engine`).
 
 ---
 
@@ -12,7 +12,7 @@ High-Performance Dual-Mode Automated Web Research Engine with Dynamic Interactiv
 - **Synthesis Engine**: Thematic clustering, key insight summarization, and source attribution.
 - **Output Artifacts**: Structured Markdown synthesis reports (`research_report.md`) and JSON datasets (`research_report.json`).
 
-### Mode B: Private Web Research (Authenticated Access)
+### Mode B: Private Web Research (Authenticated Access via Native C++ Browser)
 - **Automated Sign-Up / Account Creation**: Dynamic form detection, input population, terms acceptance, and activation link/URL entry.
 - **Automated Credential Log-In**: Intelligent discovery of username/email and password fields with multi-step support.
 - **Dynamic Interactive 2FA / OTP Handling**:
@@ -24,18 +24,19 @@ High-Performance Dual-Mode Automated Web Research Engine with Dynamic Interactiv
 
 ---
 
-## Directory Structure
+## Architecture & Integration with Native C++ Headless Browser
 
 ```
 web_researcher/
 ├── README.md               # Architecture and documentation
-├── package.json            # Node/npm run scripts
-├── research_agent.py       # Core Python dual-mode research engine
-└── web-sdk/                # High-Performance stateless Chromium CDP Web SDK (TypeScript)
-    ├── package.json
-    ├── src/
-    └── README.md
+├── package.json            # Run scripts
+└── research_agent.py       # Core Python dual-mode research engine driving Native C++ Headless Browser
 ```
+
+The heavy automated headless browser backend is compiled directly from C++17 inside `editor/`:
+- `editor/src/vision/`: Native C++ Chromium CDP process launcher, WebSocket connection, command dispatcher, and browser session manager.
+- `editor/extensions/`: Native C++ stealth anti-bot bypass, screenshot capture, screen recorder, and DuckDuckGo search.
+- Binary: `editor/build/hyper_vision_agent_engine`
 
 ---
 
@@ -58,16 +59,3 @@ python3 web_researcher/research_agent.py \
   --email "user@example.com" \
   --password "SecretPassword123"
 ```
-
-If a 2FA / OTP screen is detected, the agent halts and prompts:
-```
-[AUTH BARRIER DETECTED] Enter 2FA/OTP Verification Code
->>> Enter 2FA / OTP Verification Code: 
-```
-Upon entering the 6-digit code, the agent immediately submits the form, verifies login, and begins deep crawling.
-
----
-
-## GitHub Actions Automated Trigger
-
-The repository includes `.github/workflows/web_research.yml` for dispatching research tasks directly from GitHub or external API webhooks.

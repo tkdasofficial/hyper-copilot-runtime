@@ -1,20 +1,17 @@
 {
   "name": "hyper-web-researcher",
   "version": "1.0.0",
-  "description": "Dual-Mode Automated Web Researcher with Interactive 2FA/OTP Authentication",
-  "main": "dist/index.js",
+  "description": "Dual-Mode Automated Web Researcher powered by Native C++ Headless Browser Engine",
   "scripts": {
-    "build:sdk": "cd web-sdk && npm install && npm run build",
     "research:public": "python3 research_agent.py --mode public",
     "research:private": "python3 research_agent.py --mode private"
   },
   "keywords": [
-    "web-research",
+    "native-cpp-browser",
     "cdp",
     "automation",
     "2fa-handling",
     "otp-handling",
-    "scraping",
     "hyper-copilot"
   ],
   "author": "Hyper Copilot",
