@@ -1,8 +1,9 @@
-name: Create Reel
+name: Reel
+run-name: Reel - ${{ github.event.client_payload.prompt || inputs.prompt || github.event.client_payload.video_id || 'Render' }}
 
 on:
   repository_dispatch:
-    types: [reel_dispatch, short_form, video_agent_render]
+    types: [reel, reel_dispatch, short_form, video_agent_render]
   workflow_dispatch:
     inputs:
       prompt:
@@ -47,10 +48,15 @@ jobs:
       EDGE_TTS_PITCH: ${{ secrets.EDGE_TTS_PITCH }}
       GOOGLE_CLOUD_API_ID: ${{ secrets.GOOGLE_CLOUD_API_ID }}
       GOOGLE_CLOUD_API_SECRET: ${{ secrets.GOOGLE_CLOUD_API_SECRET }}
+      GDRIVE_DELEGATED_USER: ${{ secrets.GDRIVE_DELEGATED_USER || 'tusharkantidasofficial@gmail.com' }}
+      GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID || '1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs' }}
+      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
       GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
       GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
-      GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID }}
-      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+      SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
       VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
       USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
       PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
@@ -76,7 +82,7 @@ jobs:
             build-essential cmake pkg-config \
             libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libavutil-dev \
             libfreetype-dev libharfbuzz-dev nlohmann-json3-dev libomp-dev fonts-dejavu-core ffmpeg
-          pip install requests edge-tts
+          pip install requests edge-tts cryptography
 
       - name: Compile C++ Headless Editor
         run: |
@@ -93,37 +99,29 @@ jobs:
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"status":"processing","step":"Executing C++ Reel Pipeline (9:16)","progress":10}' || true
+            -d '{"status":"processing","step":"Executing Reel Engine (9:16)","progress":10}' || true
 
       - name: Render Reel via Primary C++ Engine Pipeline
         run: python editor/long_form_pipeline.py
 
-      - name: Upload MP4 to Supabase Storage
-        if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
-        run: |
-          if [ -f out.mp4 ]; then
-            curl -sS -X POST \
-              "$SUPABASE_URL/storage/v1/object/videos/$USER_ID/$VIDEO_ID.mp4" \
-              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-              -H "Content-Type: video/mp4" \
-              -H "x-upsert: true" \
-              --data-binary @out.mp4 || true
-          fi
-
-      - name: Export Video to Google Drive
+      - name: Export Directly to Google Drive (Videos Folder)
         if: success()
         run: |
-          python editor/export_to_drive.py || true
+          python editor/export_to_drive.py
 
-      - name: Mark completed in Supabase
+      - name: Verify Completion in Supabase
         if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
-          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
+          STATUS_VAL=$(curl -sS "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID&select=status" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"status\":\"completed\",\"progress\":100,\"step\":\"Finished\",\"video_url\":\"$USER_ID/$VIDEO_ID.mp4\"}" || true
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "")
+          if [ "$STATUS_VAL" != "completed" ]; then
+            curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
+              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{"status":"completed","progress":100,"step":"Finished"}' || true
+          fi
 
       - name: Mark failed
         if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
