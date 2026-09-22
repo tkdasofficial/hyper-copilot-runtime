@@ -3,7 +3,7 @@ run-name: Reel - ${{ github.event.client_payload.title || github.event.client_pa
 
 on:
   repository_dispatch:
-    types: [create-reel, create_reel]
+    types: [create-reel, create_reel, short_form, short]
   workflow_dispatch:
     inputs:
       prompt:
@@ -53,18 +53,11 @@ jobs:
       PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
       VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'female' }}
-      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || 'Dynamic Storyteller' }}
-      VIDEO_STYLE: ${{ github.event.client_payload.video_style || 'Cinematic' }}
-      VIDEO_THEME: ${{ github.event.client_payload.video_theme || 'Dark Modern' }}
-      CAPTION_POSITION: ${{ github.event.client_payload.caption_position || 'bottom' }}
-      HIGHLIGHT_COLOR: ${{ github.event.client_payload.highlight_color || '#3b82f6' }}
-      WORD_ACCENT_COLOR: ${{ github.event.client_payload.word_accent_color || '#fbbf24' }}
-      ANIMATION_STYLE: ${{ github.event.client_payload.animation_style || 'pop' }}
-      WATERMARK_ENABLED: ${{ github.event.client_payload.watermark_enabled || false }}
-      WATERMARK_TEXT: ${{ github.event.client_payload.watermark_text || 'Hyper Copilot' }}
-      BG_MUSIC_VOLUME: ${{ github.event.client_payload.bg_music_volume || 0.15 }}
-      AUDIO_CROSSFADE_SEC: ${{ github.event.client_payload.audio_crossfade_sec || 0.5 }}
-      AUDIO_NORMALIZE: ${{ github.event.client_payload.audio_normalize || true }}
+      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || github.event.client_payload.category || 'Dynamic Storyteller' }}
+      VIDEO_STYLE: ${{ github.event.client_payload.visual_style || github.event.client_payload.image_style || 'Cinematic' }}
+      ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '9:16' }}
+      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || '15' }}
+      CAPTIONS: ${{ github.event.client_payload.captions || 'true' }}
       PIPELINE_MODE: "short"
       TARGET_RATIO: "9:16"
       RENDER_FPS: "30"

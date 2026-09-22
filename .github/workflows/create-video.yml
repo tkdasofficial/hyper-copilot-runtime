@@ -3,7 +3,7 @@ run-name: Video - ${{ github.event.client_payload.title || github.event.client_p
 
 on:
   repository_dispatch:
-    types: [create-video, create_video]
+    types: [create-video, create_video, long_form, long]
   workflow_dispatch:
     inputs:
       prompt:
@@ -43,7 +43,13 @@ jobs:
       VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
       USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
       PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
+      NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
       VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'male' }}
+      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || github.event.client_payload.category || 'Documentary' }}
+      VIDEO_STYLE: ${{ github.event.client_payload.visual_style || github.event.client_payload.image_style || 'Cinematic' }}
+      ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '16:9' }}
+      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || '180' }}
+      CAPTIONS: ${{ github.event.client_payload.captions || 'true' }}
       PIPELINE_MODE: "long"
       TARGET_RATIO: "16:9"
       RENDER_FPS: "30"
