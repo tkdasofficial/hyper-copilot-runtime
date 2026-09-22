@@ -2,122 +2,64 @@ name: Web Research
 
 on:
   repository_dispatch:
-    types: [web_research, public_research, private_research]
+    types: [web-research, web_research, heavy_data_fetch, heavy_fetch]
   workflow_dispatch:
     inputs:
       mode:
-        description: "Research Mode (public or private)"
+        description: "Research Action Mode (--fetch for URL, --research for Query)"
         required: true
-        default: "public"
+        default: "research"
         type: choice
         options:
-          - "public"
-          - "private"
-      query:
-        description: "Research Query or Topic"
+          - "research"
+          - "fetch"
+      target:
+        description: "Target URL (for fetch) or Search Query (for research)"
         required: true
         default: "Autonomous AI Agent architectures and headless browser execution"
-      target_url:
-        description: "Target URL / Portal (optional for public, required for private)"
-        required: false
-        default: ""
-      auth_flow:
-        description: "Authentication Flow (for private mode)"
-        required: false
-        default: "login"
-        type: choice
-        options:
-          - "login"
-          - "signup"
-          - "none"
-      auth_email:
-        description: "User Email / Username (for private mode)"
-        required: false
-        default: ""
-      otp_code:
-        description: "Pre-supplied 2FA / OTP Verification Code (optional)"
-        required: false
-        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.research_id || github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  research:
+  native-heavy-research:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      RESEARCH_AUTH_PASSWORD: ${{ secrets.RESEARCH_AUTH_PASSWORD }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install System & Build Dependencies
+      - name: Install Native C++ & Chromium Dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y build-essential cmake pkg-config chromium-browser
-          pip install playwright requests beautifulsoup4
-          playwright install --with-deps chromium
+          sudo apt-get install -y build-essential cmake pkg-config chromium-browser libpthread-stubs0-dev
 
-      - name: Build & Verify Native C++ Headless Browser Engine
+      - name: Build Native C++ Heavy Web Research Engine
         run: |
-          mkdir -p editor/build
-          cd editor/build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-          make -j$(nproc) hyper_vision_agent_engine || true
-          if [ -f ./hyper_vision_agent_engine ]; then
-            echo "Native C++ Headless Browser built successfully."
-            ./hyper_vision_agent_engine --help || ./hyper_vision_agent_engine --test || true
-          fi
+          cd web-research
+          chmod +x build.sh run_heavy_fetch.sh
+          ./build.sh
 
-      - name: Execute Dual-Mode Web Research Agent
-        env:
-          RESEARCH_AUTH_EMAIL: ${{ github.event.client_payload.auth_email || inputs.auth_email }}
-          OTP_CODE: ${{ github.event.client_payload.otp_code || inputs.otp_code }}
-          CONFIRMATION_URL: ${{ github.event.client_payload.confirmation_url }}
-          OTP_WAIT_TIMEOUT: "60"
+      - name: Execute Heavy Data Fetching via Native C++ Engine
         run: |
-          MODE="${{ github.event.client_payload.mode || inputs.mode || 'public' }}"
-          QUERY="${{ github.event.client_payload.query || inputs.query }}"
-          TARGET_URL="${{ github.event.client_payload.target_url || inputs.target_url }}"
-          AUTH_FLOW="${{ github.event.client_payload.auth_flow || inputs.auth_flow || 'login' }}"
-          EMAIL="${{ github.event.client_payload.auth_email || inputs.auth_email }}"
-          OTP="${{ github.event.client_payload.otp_code || inputs.otp_code }}"
+          cd web-research
+          MODE="${{ github.event.client_payload.mode || inputs.mode || 'research' }}"
+          TARGET="${{ github.event.client_payload.target || github.event.client_payload.query || github.event.client_payload.target_url || inputs.target }}"
 
-          CMD="python web_researcher/research_agent.py --mode $MODE --query \"$QUERY\""
+          echo "Starting Native C++ Heavy Execution: Mode=$MODE, Target=$TARGET"
 
-          if [ -n "$TARGET_URL" ]; then
-            CMD="$CMD --url \"$TARGET_URL\""
+          if [ "$MODE" = "fetch" ] || [ "$MODE" = "--fetch" ]; then
+            ./run_heavy_fetch.sh --fetch "$TARGET"
+          else
+            ./run_heavy_fetch.sh --research "$TARGET"
           fi
 
-          if [ "$MODE" = "private" ]; then
-            CMD="$CMD --auth-flow $AUTH_FLOW"
-            if [ -n "$EMAIL" ]; then
-              CMD="$CMD --email \"$EMAIL\""
-            fi
-            if [ -n "$OTP" ]; then
-              CMD="$CMD --otp \"$OTP\""
-            fi
-          fi
-
-          echo "Executing research pipeline: $CMD"
-          eval $CMD
-
-      - name: Upload Research Artifacts & Synthesis
+      - name: Upload Research Dossier & Visual Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: web-research-synthesis
+          name: native-research-dossier
           path: |
-            research_output/research_report.md
-            research_output/research_report.json
-            research_output/screenshots/
+            web-research/research_output/
           if-no-files-found: ignore

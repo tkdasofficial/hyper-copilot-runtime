@@ -1,0 +1,7 @@
+{
+  "id": "screenshot",
+  "name": "Screenshot",
+  "description": "Captures full-page scrolling screenshots and element-specific cropped images",
+  "version": "1.0.0",
+  "author": "Hyper Vision Agent Team"
+}

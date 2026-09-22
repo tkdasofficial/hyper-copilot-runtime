@@ -1,0 +1,7 @@
+{
+  "id": "screen_recorder",
+  "name": "Screen Recorder",
+  "description": "Streams CDP screencast frames to 1080p video via FFmpeg pipe",
+  "version": "1.0.0",
+  "author": "Hyper Vision Agent Team"
+}
