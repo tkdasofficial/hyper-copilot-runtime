@@ -68,6 +68,8 @@ jobs:
       DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || inputs.duration_seconds || '15' }}
       CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
       CAPTION_SCALE: ${{ github.event.client_payload.caption_scale || '4' }}
+      CAPTION_SIZE: ${{ github.event.client_payload.caption_size || '' }}
+      CAPTION_STYLE: ${{ github.event.client_payload.caption_style || 'Dynamic' }}
     steps:
       - uses: actions/checkout@v4
 

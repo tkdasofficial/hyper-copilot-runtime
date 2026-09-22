@@ -84,8 +84,20 @@ BGM_ENABLED = BGM_RAW not in {"0", "false", "off", "no", "bgm_off", "disabled"}
 # Captions
 CAPTIONS_RAW = (env("CAPTIONS") or "true").lower()
 CAPTIONS_ENABLED = CAPTIONS_RAW not in {"0", "false", "off", "no"}
-CAPTION_STYLE = env("CAPTION_STYLE", "Dynamic")
-CAPTION_SIZE = env("CAPTION_SIZE", "Medium")
+CAPTION_STYLE = env("CAPTION_STYLE", "Dynamic").capitalize()
+
+raw_caption_scale = env("CAPTION_SCALE", "4")
+raw_caption_size = env("CAPTION_SIZE", "")
+if raw_caption_size.lower() in ("small", "medium", "large"):
+    CAPTION_SIZE = raw_caption_size.capitalize()
+elif raw_caption_scale == "2":
+    CAPTION_SIZE = "Small"
+elif raw_caption_scale == "6":
+    CAPTION_SIZE = "Large"
+else:
+    CAPTION_SIZE = "Medium"
+
+USED_VIDEO_IDS = set()
 
 # API Keys
 NVIDIA_API_KEY = env("NVIDIA_API_KEY")
@@ -159,7 +171,7 @@ def generate_script_and_storyboard() -> tuple[str, list[dict]]:
     wpm = 135  # Words per minute for cinematic documentary pacing
     approx_words = int(TARGET_MINUTES * wpm)
     min_words = int((MIN_DURATION_SEC / 60.0) * wpm)
-    target_scenes = max(4, min(30, int(TARGET_DURATION_SEC / 8.0)))
+    target_scenes = max(15, min(45, math.ceil(TARGET_DURATION_SEC / 4.0))) if TARGET_DURATION_SEC >= 45 else max(4, math.ceil(TARGET_DURATION_SEC / 3.5))
 
     log(
         f"Stage 1 [Scripting]: Generating {CATEGORY} script (~{approx_words} words, {target_scenes} scenes) for idea: '{PROMPT}'",
@@ -348,7 +360,7 @@ def generate_procedural_category_screenplay(approx_words: int, target_scenes: in
 
 
 # --- Stage 2: Voiceover / TTS Synthesis --------------------------------------
-def generate_voiceover(script: str, output_path: str = "assets/voice.mp3") -> float:
+def generate_voiceover(script: str, output_path: str = "assets/voice.mp3") -> tuple[float, list[dict]]:
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     voice = get_edge_tts_voice(VOICE_GENDER)
 
@@ -359,21 +371,49 @@ def generate_voiceover(script: str, output_path: str = "assets/voice.mp3") -> fl
     )
 
     clean_text = " ".join(script.split())
-    cmd = [
-        "edge-tts",
-        "--voice", voice,
-        "--text", clean_text,
-        "--write-media", output_path
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    if res.returncode != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-        print(f"[Edge-TTS] Fallback generation for {output_path}")
-        subprocess.run([
-            "ffmpeg", "-y", "-f", "lavfi",
-            "-i", "anullsrc=r=48000:cl=stereo",
-            "-t", str(int(TARGET_DURATION_SEC)),
-            output_path
-        ], check=True)
+    word_timings: list[dict] = []
+
+    try:
+        import asyncio
+        import edge_tts
+
+        async def _run_stream():
+            communicate = edge_tts.Communicate(clean_text, voice)
+            words = []
+            with open(output_path, "wb") as f:
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        f.write(chunk["data"])
+                    elif chunk["type"] == "WordBoundary":
+                        st = chunk["offset"] / 10000000.0
+                        dur = chunk["duration"] / 10000000.0
+                        words.append({
+                            "word": chunk["text"],
+                            "start_time": round(st, 3),
+                            "end_time": round(st + dur, 3),
+                        })
+            return words
+
+        word_timings = asyncio.run(_run_stream())
+    except Exception as e:
+        print(f"[Edge-TTS Python API] Notice: {e}")
+
+    if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+        cmd = [
+            "edge-tts",
+            "--voice", voice,
+            "--text", clean_text,
+            "--write-media", output_path
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0 or not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            print(f"[Edge-TTS] Fallback generation for {output_path}")
+            subprocess.run([
+                "ffmpeg", "-y", "-f", "lavfi",
+                "-i", "anullsrc=r=48000:cl=stereo",
+                "-t", str(int(TARGET_DURATION_SEC)),
+                output_path
+            ], check=True)
 
     probe = subprocess.run(
         [
@@ -389,8 +429,101 @@ def generate_voiceover(script: str, output_path: str = "assets/voice.mp3") -> fl
     except Exception:
         duration = TARGET_DURATION_SEC
 
-    log(f"Voiceover track synthesized ({duration:.1f}s)", progress=45)
-    return duration
+    if not word_timings:
+        words = clean_text.split()
+        if words:
+            wd = duration / max(1, len(words))
+            for idx, w in enumerate(words):
+                word_timings.append({
+                    "word": w,
+                    "start_time": round(idx * wd, 3),
+                    "end_time": round((idx + 0.9) * wd, 3),
+                })
+
+    log(f"Voiceover track synthesized ({duration:.1f}s, {len(word_timings)} words)", progress=45)
+    return duration, word_timings
+
+
+def write_karaoke_ass(word_timings: list[dict], ass_file: str, width: int, height: int, size: str = "Medium", style: str = "Dynamic") -> str:
+    is_portrait = height > width
+    if is_portrait:
+        font_size = 48 if size == "Small" else (96 if size == "Large" else 72)
+        margin_v = int(height * 0.18)
+    else:
+        font_size = 28 if size == "Small" else (56 if size == "Large" else 42)
+        margin_v = int(height * 0.08)
+
+    outline = 4 if height >= 1080 else 3
+    highlight_color = "&H0000E6FF" if style == "Dynamic" else "&H0000FFFF"
+
+    def fmt_t(sec: float) -> str:
+        sec = max(0.0, sec)
+        cs = int(round(sec * 100)) % 100
+        tot_s = int(sec)
+        return f"{tot_s // 3600}:{(tot_s % 3600) // 60:02d}:{tot_s % 60:02d}.{cs:02d}"
+
+    header = f"""[Script Info]
+Title: Hyper Copilot Dynamic Karaoke Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+PlayResX: {width}
+PlayResY: {height}
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,DejaVu Sans,{font_size},&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},2,2,30,30,{margin_v},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    lines = [header]
+    for i in range(0, len(word_timings), 4):
+        chunk = word_timings[i:i+4]
+        for w_idx, active_w in enumerate(chunk):
+            w_start = active_w["start_time"]
+            w_end = max(w_start + 0.25, active_w["end_time"])
+            line_text = "{\\an2}"
+            for c_idx, w in enumerate(chunk):
+                word_str = w["word"]
+                if c_idx == w_idx:
+                    line_text += f"{{\\c{highlight_color}}}{{\\b1}}{word_str}{{\\b0}}{{\\c&H00FFFFFF&}} "
+                elif c_idx < w_idx:
+                    line_text += f"{{\\c&H00FFFFFF&}}{word_str} "
+                else:
+                    line_text += f"{{\\c&H00C0C0C0&}}{word_str}{{\\c&H00FFFFFF&}} "
+            lines.append(f"Dialogue: 0,{fmt_t(w_start)},{fmt_t(w_end)},Default,,0,0,0,,{line_text.strip()}\n")
+
+    os.makedirs(os.path.dirname(os.path.abspath(ass_file)), exist_ok=True)
+    with open(ass_file, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    return ass_file
+
+
+def burn_captions_into_video(video_path: str, ass_path: str) -> bool:
+    if not os.path.exists(ass_path):
+        return False
+    try:
+        temp_out = video_path + ".captioned.mp4"
+        escaped_ass = os.path.abspath(ass_path).replace(":", "\\:").replace("'", "\\'")
+        cmd = [
+            "ffmpeg", "-y", "-i", video_path,
+            "-vf", f"ass='{escaped_ass}'",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-c:a", "copy",
+            temp_out
+        ]
+        res = subprocess.run(cmd, capture_output=True)
+        if res.returncode == 0 and os.path.exists(temp_out) and os.path.getsize(temp_out) > 1000:
+            os.replace(temp_out, video_path)
+            log("Dynamic karaoke subtitles burned in successfully.")
+            return True
+        else:
+            if os.path.exists(temp_out):
+                os.remove(temp_out)
+    except Exception as e:
+        log(f"Caption burn-in notice: {e}")
+    return False
 
 
 # --- Stage 3: Stock Asset Sourcing (Pexels & Pixabay 720p / 1080p) -----------
@@ -398,27 +531,21 @@ def search_pexels_video(query: str, target_res: str = "1080p") -> str | None:
     if not PEXELS_API_KEY:
         return None
     try:
-        url = f"https://api.pexels.com/videos/search?query={requests.utils.quote(query)}&orientation=landscape&size=large&per_page=8"
+        orient = "portrait" if ("9:16" in ASPECT_RATIO or "vertical" in ASPECT_RATIO or HEIGHT > WIDTH) else "landscape"
+        url = f"https://api.pexels.com/videos/search?query={requests.utils.quote(query)}&orientation={orient}&size=large&per_page=12"
         headers = {"Authorization": PEXELS_API_KEY}
         r = requests.get(url, headers=headers, timeout=12)
         if r.ok:
             data = r.json()
-            # 1. Look for exact resolution match
-            req_w = 1280 if target_res == "720p" else 1920
-            req_h = 720 if target_res == "720p" else 1080
             for v in data.get("videos", []):
-                for f in v.get("video_files", []):
-                    if f.get("width") == req_w and f.get("height") == req_h and f.get("link"):
-                        return f["link"]
-            # 2. Look for higher/equal resolution
-            for v in data.get("videos", []):
-                for f in v.get("video_files", []):
-                    if (f.get("width") or 0) >= req_w and f.get("link"):
-                        return f["link"]
-            # 3. Any HD link
-            for v in data.get("videos", []):
-                for f in v.get("video_files", []):
-                    if (f.get("width") or 0) >= 1280 and f.get("link"):
+                vid = f"pexels_{v.get('id')}"
+                if vid in USED_VIDEO_IDS:
+                    continue
+                files = v.get("video_files", [])
+                files.sort(key=lambda x: (x.get("width", 0) or 0) * (x.get("height", 0) or 0), reverse=True)
+                for f in files:
+                    if f.get("link") and f.get("file_type") == "video/mp4":
+                        USED_VIDEO_IDS.add(vid)
                         return f["link"]
     except Exception as e:
         print(f"[Pexels] Error for '{query}': {e}", file=sys.stderr)
@@ -428,15 +555,20 @@ def search_pixabay_video(query: str, target_res: str = "1080p") -> str | None:
     if not PIXABAY_API_KEY:
         return None
     try:
-        url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q={requests.utils.quote(query)}&video_type=film&orientation=horizontal&per_page=8"
+        orient = "vertical" if ("9:16" in ASPECT_RATIO or "vertical" in ASPECT_RATIO or HEIGHT > WIDTH) else "horizontal"
+        url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q={requests.utils.quote(query)}&video_type=film&orientation={orient}&per_page=12"
         r = requests.get(url, timeout=12)
         if r.ok:
             data = r.json()
             for hit in data.get("hits", []):
+                vid = f"pixabay_{hit.get('id')}"
+                if vid in USED_VIDEO_IDS:
+                    continue
                 vids = hit.get("videos", {})
                 order = ["large", "medium", "small"] if target_res == "1080p" else ["medium", "large", "small"]
                 for res_key in order:
                     if vids.get(res_key, {}).get("url"):
+                        USED_VIDEO_IDS.add(vid)
                         return vids[res_key]["url"]
     except Exception as e:
         print(f"[Pixabay] Error for '{query}': {e}", file=sys.stderr)
@@ -748,8 +880,22 @@ def render_ffmpeg_master_stream(
     total_duration: float,
     fps: float = 60.0,
 ) -> bool:
-    log("Running FFmpeg master render fallback with auto-ducking...", progress=80)
-    first_clip = scene_clips[0]["file"] if scene_clips else "assets/scenes/scene_000.mp4"
+    log("Running FFmpeg master render with multi-scene concatenation and auto-ducking...", progress=80)
+    os.makedirs("assets/scenes", exist_ok=True)
+    concat_list = "assets/scenes/concat_manifest.txt"
+    valid_clips = [sc for sc in scene_clips if os.path.exists(sc.get("file", ""))]
+    if not valid_clips:
+        log("No valid scene clips found for FFmpeg render.", progress=80)
+        return False
+
+    with open(concat_list, "w", encoding="utf-8") as f:
+        for sc in valid_clips:
+            safe_clip = os.path.abspath(sc["file"]).replace("\x27", "\\\x27")
+            dur = sc.get("duration", 4.0)
+            f.write(f"file \x27{safe_clip}\x27\n")
+            f.write(f"duration {dur:.2f}\n")
+        safe_last = os.path.abspath(valid_clips[-1]["file"]).replace("\x27", "\\\x27")
+        f.write(f"file \x27{safe_last}\x27\n")
 
     if music_path and os.path.exists(music_path) and BGM_ENABLED:
         filter_complex = (
@@ -759,7 +905,7 @@ def render_ffmpeg_master_stream(
         )
         cmd = [
             "ffmpeg", "-y",
-            "-stream_loop", "-1", "-i", first_clip,
+            "-f", "concat", "-safe", "0", "-i", concat_list,
             "-i", voice_path,
             "-i", music_path,
             "-filter_complex", filter_complex,
@@ -774,7 +920,7 @@ def render_ffmpeg_master_stream(
         )
         cmd = [
             "ffmpeg", "-y",
-            "-stream_loop", "-1", "-i", first_clip,
+            "-f", "concat", "-safe", "0", "-i", concat_list,
             "-i", voice_path,
             "-filter_complex", filter_complex,
             "-map", "[vout]", "-map", "1:a",
@@ -782,11 +928,8 @@ def render_ffmpeg_master_stream(
             "-t", str(round(total_duration, 2)),
             "out.mp4"
         ]
-
     res = subprocess.run(cmd, capture_output=True)
     return res.returncode == 0 and os.path.exists("out.mp4") and os.path.getsize("out.mp4") > 1000
-
-
 # --- Stage 6: Export & Upload -----------------------------------------------
 def export_video_to_google_drive(video_path: str = "out.mp4") -> str | None:
     export_script = os.path.join(os.path.dirname(__file__), "export_to_drive.py")
@@ -827,7 +970,7 @@ def main() -> int:
 
         # 2. Voiceover Synthesis (Edge-TTS)
         voice_path = "assets/voice.mp3"
-        audio_dur = generate_voiceover(script, voice_path)
+        audio_dur, word_timings = generate_voiceover(script, voice_path)
         total_duration = max(MIN_DURATION_SEC, min(MAX_DURATION_SEC, audio_dur))
         log(f"Narration locked: {total_duration:.1f}s ({total_duration/60:.2f} mins)", progress=48)
 
@@ -861,6 +1004,12 @@ def main() -> int:
 
         if not (os.path.exists("out.mp4") and os.path.getsize("out.mp4") > 1000):
             raise RuntimeError("Final video render output file was not produced.")
+
+        # Stage 3.5: Burn-in dynamic karaoke captions based on user settings
+        if CAPTIONS_ENABLED and word_timings:
+            log(f"Stage 3.5 [Karaoke Subtitles]: Rendering burned-in {CAPTION_SIZE} subtitles ({CAPTION_STYLE})...", progress=88)
+            ass_path = write_karaoke_ass(word_timings, "assets/captions.ass", WIDTH, HEIGHT, size=CAPTION_SIZE, style=CAPTION_STYLE)
+            burn_captions_into_video("out.mp4", ass_path)
 
         # 6. Upload to Supabase Storage
         log("Stage 4 [Complete/Download]: Uploading final video and exporting...", step="Complete/Download", progress=90)
