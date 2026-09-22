@@ -36,7 +36,7 @@ async function request(urlStr, options = {}, data = null) {
     const req = https.request(url, options, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
-      res.on('end', () => {
+      res.on('end', async () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
             resolve(JSON.parse(body));
@@ -163,67 +163,72 @@ async function uploadVideo() {
 
   const totalLength = Buffer.byteLength(header) + fileSize + Buffer.byteLength(footer);
 
-  const uploadReq = https.request(new URL('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true'), {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': `multipart/related; boundary=${boundary}`,
-      'Content-Length': totalLength
-    }
-  }, (res) => {
-    let body = '';
-    res.on('data', chunk => body += chunk);
-    res.on('end', () => {
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        try {
-          const uploaded = JSON.parse(body);
-          console.log(`[Drive Upload Success] File ID: ${uploaded.id}`);
-          const directDownloadUrl = `https://drive.google.com/uc?export=download&id=${uploaded.id}`;
-          const viewUrl = `https://drive.google.com/file/d/${uploaded.id}/view`;
-          console.log(`[Drive Download URL] ${directDownloadUrl}`);
-          console.log(`[Drive View URL] ${viewUrl}`);
-
-          if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY && VIDEO_ID) {
-            try {
-              const patchData = JSON.stringify({
-                video_url: directDownloadUrl,
-                status: 'completed',
-                progress: 100,
-                step: 'Finished',
-                updated_at: new Date().toISOString()
-              });
-              await request(`${SUPABASE_URL}/rest/v1/videos?id=eq.${VIDEO_ID}`, {
-                method: 'PATCH',
-                headers: {
-                  'apikey': SUPABASE_SERVICE_ROLE_KEY,
-                  'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-                  'Content-Type': 'application/json',
-                  'Prefer': 'return=minimal'
-                }
-              }, patchData);
-              console.log(`[Supabase] Recorded video_url and completed status for video: ${VIDEO_ID}`);
-            } catch (syncErr) {
-              console.warn(`[Supabase] Metadata sync notice: ${syncErr.message}`);
-            }
-          }
-        } catch (e) {
-          console.log(`[Drive Upload Complete] Response: ${body}`);
-        }
-      } else {
-        console.error(`[Drive Upload Failed] HTTP ${res.statusCode}: ${body}`);
+  return new Promise((resolve) => {
+    const uploadReq = https.request(new URL('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true'), {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+        'Content-Length': totalLength
       }
+    }, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', async () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            const uploaded = JSON.parse(body);
+            console.log(`[Drive Upload Success] File ID: ${uploaded.id}`);
+            const directDownloadUrl = `https://drive.google.com/uc?export=download&id=${uploaded.id}`;
+            const viewUrl = `https://drive.google.com/file/d/${uploaded.id}/view`;
+            console.log(`[Drive Download URL] ${directDownloadUrl}`);
+            console.log(`[Drive View URL] ${viewUrl}`);
+
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(VIDEO_ID);
+            if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY && VIDEO_ID && isUuid) {
+              try {
+                const patchData = JSON.stringify({
+                  video_url: directDownloadUrl,
+                  status: 'completed',
+                  progress: 100,
+                  step: 'Finished',
+                  updated_at: new Date().toISOString()
+                });
+                await request(`${SUPABASE_URL}/rest/v1/videos?id=eq.${VIDEO_ID}`, {
+                  method: 'PATCH',
+                  headers: {
+                    'apikey': SUPABASE_SERVICE_ROLE_KEY,
+                    'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=minimal'
+                  }
+                }, patchData);
+                console.log(`[Supabase] Recorded video_url and completed status for video: ${VIDEO_ID}`);
+              } catch (syncErr) {
+                console.warn(`[Supabase] Metadata sync notice: ${syncErr.message}`);
+              }
+            }
+          } catch (e) {
+            console.log(`[Drive Upload Complete] Response: ${body}`);
+          }
+        } else {
+          console.error(`[Drive Upload Failed] HTTP ${res.statusCode}: ${body}`);
+        }
+        resolve();
+      });
     });
-  });
 
-  uploadReq.on('error', (err) => {
-    console.error(`[Drive Upload Error] ${err.message}`);
-  });
+    uploadReq.on('error', (err) => {
+      console.error(`[Drive Upload Error] ${err.message}`);
+      resolve();
+    });
 
-  uploadReq.write(header);
-  const stream = fs.createReadStream(VIDEO_PATH);
-  stream.pipe(uploadReq, { end: false });
-  stream.on('end', () => {
-    uploadReq.end(footer);
+    uploadReq.write(header);
+    const stream = fs.createReadStream(VIDEO_PATH);
+    stream.pipe(uploadReq, { end: false });
+    stream.on('end', () => {
+      uploadReq.end(footer);
+    });
   });
 }
 
