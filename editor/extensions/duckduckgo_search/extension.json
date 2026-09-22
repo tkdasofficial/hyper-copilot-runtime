@@ -1,0 +1,7 @@
+{
+  "id": "duckduckgo_search",
+  "name": "DuckDuckGo Search",
+  "description": "Zero-API search query provider and URL link extractor",
+  "version": "1.0.0",
+  "author": "Hyper Vision Agent Team"
+}

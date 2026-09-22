@@ -49,13 +49,19 @@ try:
 except ValueError:
     raw_duration = 300.0
 
-TARGET_DURATION_SEC = max(60.0, min(1200.0, raw_duration))
+ASPECT_RATIO = env("ASPECT_RATIO", "16:9")
+TARGET_DURATION_SEC = max(10.0, min(1200.0, raw_duration))
 TARGET_MINUTES = TARGET_DURATION_SEC / 60.0
 MIN_DURATION_SEC = TARGET_DURATION_SEC * 0.85
 MAX_DURATION_SEC = TARGET_DURATION_SEC * 1.15
 
-# Specifications: 16:9 Landscape @ 60 FPS
-WIDTH, HEIGHT = 1920, 1080
+# Specifications: Dynamic Aspect Ratio (16:9 Landscape or 9:16 Vertical Reel)
+if "9:16" in ASPECT_RATIO or "vertical" in ASPECT_RATIO:
+    WIDTH, HEIGHT = 1080, 1920
+elif "1:1" in ASPECT_RATIO or "square" in ASPECT_RATIO:
+    WIDTH, HEIGHT = 1080, 1080
+else:
+    WIDTH, HEIGHT = 1920, 1080
 TARGET_FPS = 60.0
 
 # API Keys

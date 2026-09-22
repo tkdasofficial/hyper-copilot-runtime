@@ -1,0 +1,33 @@
+{
+  "name": "@hyper-vision/web-sdk",
+  "version": "1.0.0",
+  "description": "High-Performance Stateless Chromium CDP Execution Runtime in TypeScript (Universal Web & Node SDK)",
+  "author": "Hyper Vision Agent",
+  "license": "MIT",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./extensions": {
+      "types": "./dist/types/extensions/index.d.ts",
+      "import": "./dist/esm/extensions/index.js",
+      "require": "./dist/cjs/extensions/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json",
+    "build:esm": "tsc -p tsconfig.json",
+    "build:cjs": "tsc -p tsconfig.cjs.json",
+    "test": "node dist/cjs/test/smoke.test.js"
+  }
+}

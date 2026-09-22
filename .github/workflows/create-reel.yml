@@ -22,17 +22,20 @@ on:
         required: false
         default: "15"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   render-reel:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CF_LLM_MODEL: ${{ secrets.CF_LLM_MODEL }}
-      CF_IMAGE_MODEL: ${{ secrets.CF_IMAGE_MODEL }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       PIXAZO_API_KEY: ${{ secrets.PIXAZO_API_KEY }}
       PIXAZO_BASE_URL: ${{ secrets.PIXAZO_BASE_URL }}
@@ -53,6 +56,7 @@ jobs:
       PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
       VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'female' }}
+      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || 'Dynamic Storyteller' }}
       IMAGE_STYLE: ${{ github.event.client_payload.image_style || 'Cinematic 3D' }}
       ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '9:16' }}
       DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || inputs.duration_seconds || '15' }}
@@ -65,11 +69,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install System & C++ Dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libavutil-dev \
+            libfreetype-dev libharfbuzz-dev nlohmann-json3-dev libomp-dev fonts-dejavu-core ffmpeg
           pip install requests edge-tts
+
+      - name: Compile C++ Headless Editor
+        run: |
+          mkdir -p editor/build
+          cd editor/build
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          make -j$(nproc)
+          ./hyper_editor --help || true
 
       - name: Mark processing in Supabase
         if: env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
@@ -78,10 +93,10 @@ jobs:
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"status":"processing","step":"Generating Reel (mini-editor)","progress":10}' || true
+            -d '{"status":"processing","step":"Executing C++ Reel Pipeline (9:16)","progress":10}' || true
 
-      - name: Render Reel (Short-Form Engine / mini-editor)
-        run: python mini-editor/render.py
+      - name: Render Reel via Primary C++ Engine Pipeline
+        run: python editor/long_form_pipeline.py
 
       - name: Upload MP4 to Supabase Storage
         if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''

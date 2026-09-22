@@ -22,6 +22,10 @@ on:
         required: false
         default: "male"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   render-video:
     runs-on: ubuntu-latest
@@ -105,6 +109,15 @@ jobs:
         if: success()
         run: |
           python editor/export_to_drive.py || true
+
+      - name: Mark completed in Supabase
+        if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
+        run: |
+          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"status\":\"completed\",\"progress\":100,\"step\":\"Finished\",\"video_url\":\"$USER_ID/$VIDEO_ID.mp4\"}" || true
 
       - name: Mark failed
         if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''

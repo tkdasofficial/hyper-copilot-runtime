@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(HyperEditor LANGUAGES CXX)
+project(HyperCopilotRuntime LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -7,8 +7,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Compiler optimization flags
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -O3 -march=native -pthread)
+    add_compile_options(-Wall -Wextra -O3 -march=native -pthread -fPIC)
 endif()
+
+# Threading support
+find_package(Threads REQUIRED)
 
 # Find OpenMP for parallel frame processing
 find_package(OpenMP)
@@ -34,19 +37,21 @@ pkg_check_modules(HARFBUZZ REQUIRED IMPORTED_TARGET harfbuzz)
 # nlohmann/json
 find_package(nlohmann_json 3.2.0 QUIET)
 if (NOT nlohmann_json_FOUND)
-    # Check pkg-config or standard header path
     pkg_check_modules(NLOHMANN_JSON nlohmann_json)
 endif()
 
 # Include directories
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/extensions
     ${FREETYPE_INCLUDE_DIRS}
     ${HARFBUZZ_INCLUDE_DIRS}
 )
 
-# Source files
-set(SOURCES
+# ==============================================================================
+# 1. Hyper Editor: High-Performance C++ Video Processing & Rendering Engine
+# ==============================================================================
+set(EDITOR_SOURCES
     src/main.cpp
     src/core/editor.cpp
     src/core/ffmpeg_bridge.cpp
@@ -68,8 +73,7 @@ set(SOURCES
     src/utils/logger.cpp
 )
 
-add_executable(hyper_editor ${SOURCES})
-
+add_executable(hyper_editor ${EDITOR_SOURCES})
 target_link_libraries(hyper_editor PRIVATE
     PkgConfig::LIBAVCODEC
     PkgConfig::LIBAVFORMAT
@@ -79,7 +83,7 @@ target_link_libraries(hyper_editor PRIVATE
     PkgConfig::LIBAVUTIL
     PkgConfig::FREETYPE
     PkgConfig::HARFBUZZ
-    pthread
+    Threads::Threads
     m
 )
 
@@ -91,4 +95,65 @@ if (OpenMP_CXX_FOUND)
     target_link_libraries(hyper_editor PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
-install(TARGETS hyper_editor DESTINATION bin)
+# ==============================================================================
+# 2. Hyper Vision Agent: Native Heavy C++ CDP Headless Browser & Vision Engine
+# ==============================================================================
+set(HVA_SOURCES
+    src/vision/process_launcher.cpp
+    src/vision/websocket_client.cpp
+    src/vision/cdp_connection.cpp
+    src/vision/target_session_manager.cpp
+    src/vision/command_dispatcher.cpp
+    src/vision/page.cpp
+    src/vision/browser_session.cpp
+    src/vision/engine.cpp
+)
+
+set(HVA_HEADERS
+    include/hyper_vision_agent/types.hpp
+    include/hyper_vision_agent/process_launcher.hpp
+    include/hyper_vision_agent/websocket_client.hpp
+    include/hyper_vision_agent/cdp_connection.hpp
+    include/hyper_vision_agent/target_session_manager.hpp
+    include/hyper_vision_agent/command_dispatcher.hpp
+    include/hyper_vision_agent/page.hpp
+    include/hyper_vision_agent/browser_session.hpp
+    include/hyper_vision_agent/engine.hpp
+)
+
+add_library(hyper_vision_agent_core STATIC
+    ${HVA_SOURCES}
+    ${HVA_HEADERS}
+)
+
+target_include_directories(hyper_vision_agent_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/extensions
+)
+
+target_link_libraries(hyper_vision_agent_core PUBLIC
+    Threads::Threads
+)
+
+# Modular Extensions
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extensions/CMakeLists.txt")
+    add_subdirectory(extensions)
+endif()
+
+# Vision Engine Executable
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/vision/vision_main.cpp")
+    add_executable(hyper_vision_agent_engine
+        src/vision/vision_main.cpp
+    )
+    target_link_libraries(hyper_vision_agent_engine PRIVATE
+        hyper_vision_agent_core
+        hyper_vision_agent_ext_screen_recorder
+        hyper_vision_agent_ext_screenshot
+        hyper_vision_agent_ext_anti_bot_stealth
+        hyper_vision_agent_ext_duckduckgo_search
+        Threads::Threads
+    )
+endif()
+
+# Install rules
+install(TARGETS hyper_editor hyper_vision_agent_core hyper_vision_agent_engine DESTINATION bin OPTIONAL)

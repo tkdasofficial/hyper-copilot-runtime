@@ -1,0 +1,7 @@
+{
+  "id": "anti_bot_stealth",
+  "name": "Anti-Bot Stealth",
+  "description": "Bypasses bot detection, hides navigator.webdriver, applies natural human mouse curves, and handles captcha frames",
+  "version": "1.0.0",
+  "author": "Hyper Vision Agent Team"
+}
