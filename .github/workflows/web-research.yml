@@ -1,29 +1,188 @@
-name: Web Research
+name: Native Engine Runner & Web Research Pipeline
 
 on:
   repository_dispatch:
-    types: [web-research, web_research, heavy_data_fetch, heavy_fetch]
+    types: [web-research, web_research, heavy_data_fetch, heavy_fetch, video_dispatch, long_form, short_form, video-agent, create_video]
   workflow_dispatch:
     inputs:
-      mode:
-        description: "Research Action Mode (--fetch for URL, --research for Query)"
+      task_type:
+        description: "Task Type: 'video' or 'research'"
         required: true
-        default: "research"
+        default: "video"
         type: choice
         options:
+          - "video"
           - "research"
-          - "fetch"
-      target:
-        description: "Target URL (for fetch) or Search Query (for research)"
+      prompt:
+        description: "Video Topic / Research Query"
         required: true
-        default: "Autonomous AI Agent architectures and headless browser execution"
+        default: "Deep oceanic trenches and bioluminescent ecosystems of the midnight zone"
+      duration_minutes:
+        description: "Duration in minutes"
+        required: false
+        default: "3"
+      category:
+        description: "Video Category"
+        required: false
+        default: "Documentary"
+      visual_style:
+        description: "Visual Style"
+        required: false
+        default: "Cinematic"
+      resolution:
+        description: "Resolution (720p or 1080p)"
+        required: false
+        default: "1080p"
+      fps:
+        description: "Frame Rate (30 or 60)"
+        required: false
+        default: "60"
+      voice_gender:
+        description: "Voice Gender (male/female)"
+        required: false
+        default: "male"
+      bgm:
+        description: "BGM Toggle (true/false)"
+        required: false
+        default: "true"
+      captions:
+        description: "Captions (true/false)"
+        required: false
+        default: "true"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.research_id || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || github.event.client_payload.research_id || github.run_id }}
   cancel-in-progress: true
 
 jobs:
+  # --------------------------------------------------------------------------
+  # 1. Native C++ Video Engine Pipeline (Long-Form & Short-Form Video Studio)
+  # --------------------------------------------------------------------------
+  render-video-engine:
+    if: |
+      github.event.action == 'long_form' ||
+      github.event.action == 'video_dispatch' ||
+      github.event.action == 'video-agent' ||
+      github.event.action == 'short_form' ||
+      github.event.action == 'create_video' ||
+      inputs.task_type == 'video' ||
+      (github.event_name == 'workflow_dispatch' && inputs.task_type != 'research')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      GOOGLE_CLOUD_API_ID: ${{ secrets.GOOGLE_CLOUD_API_ID }}
+      GOOGLE_CLOUD_API_SECRET: ${{ secrets.GOOGLE_CLOUD_API_SECRET }}
+      GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
+      GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
+      GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID }}
+      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+
+      # UI Parameters Mapped Dynamically
+      VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
+      USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
+      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
+      NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
+      CATEGORY: ${{ github.event.client_payload.category || github.event.client_payload.voice_persona || inputs.category || 'Documentary' }}
+      VISUAL_STYLE: ${{ github.event.client_payload.visual_style || github.event.client_payload.image_style || inputs.visual_style || 'Cinematic' }}
+      RESOLUTION: ${{ github.event.client_payload.resolution || github.event.client_payload.quality || inputs.resolution || '1080p' }}
+      FPS: ${{ github.event.client_payload.fps || github.event.client_payload.bitrate || inputs.fps || '60' }}
+      DURATION_MINUTES: ${{ github.event.client_payload.duration_minutes || inputs.duration_minutes || '3' }}
+      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds }}
+      VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'male' }}
+      BGM: ${{ github.event.client_payload.bgm || inputs.bgm || 'true' }}
+      CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
+      CAPTION_STYLE: ${{ github.event.client_payload.caption_style || 'Dynamic' }}
+      CAPTION_SIZE: ${{ github.event.client_payload.caption_size || github.event.client_payload.caption_scale || 'Medium' }}
+      ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '16:9' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install System, C++ & Audio Dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            build-essential cmake pkg-config \
+            libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libavutil-dev \
+            libfreetype-dev libharfbuzz-dev nlohmann-json3-dev libomp-dev fonts-dejavu-core ffmpeg
+          pip install requests edge-tts
+
+      - name: Compile C++ Native Headless Engine
+        run: |
+          mkdir -p editor/build
+          cd editor/build
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+          make -j$(nproc)
+          ./hyper_editor --help || true
+
+      - name: Mark Scripting Stage in Supabase
+        if: env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
+        run: |
+          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"processing","step":"Scripting","progress":10}' || true
+
+      - name: Execute Long-Form C++ Pipeline
+        run: python editor/long_form_pipeline.py
+
+      - name: Upload Master MP4 to Supabase Storage
+        if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
+        run: |
+          if [ -f out.mp4 ]; then
+            curl -sS -X POST \
+              "$SUPABASE_URL/storage/v1/object/videos/$USER_ID/$VIDEO_ID.mp4" \
+              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+              -H "Content-Type: video/mp4" \
+              -H "x-upsert: true" \
+              --data-binary @out.mp4 || true
+          fi
+
+      - name: Export Rendered Video to Google Drive
+        if: success()
+        run: python editor/export_to_drive.py || true
+
+      - name: Mark Pipeline Completed in Supabase
+        if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
+        run: |
+          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"status\":\"completed\",\"progress\":100,\"step\":\"Complete/Download\",\"video_url\":\"$USER_ID/$VIDEO_ID.mp4\"}" || true
+
+      - name: Mark Pipeline Failed on Error
+        if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
+        run: |
+          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"failed","step":"failed","error":"Video Engine pipeline error. Review runner logs."}' || true
+
+  # --------------------------------------------------------------------------
+  # 2. Native C++ Heavy Web Research Engine
+  # --------------------------------------------------------------------------
   native-heavy-research:
+    if: |
+      github.event.action == 'web-research' ||
+      github.event.action == 'web_research' ||
+      github.event.action == 'heavy_data_fetch' ||
+      github.event.action == 'heavy_fetch' ||
+      inputs.task_type == 'research'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -45,7 +204,7 @@ jobs:
         run: |
           cd web-research
           MODE="${{ github.event.client_payload.mode || inputs.mode || 'research' }}"
-          TARGET="${{ github.event.client_payload.target || github.event.client_payload.query || github.event.client_payload.target_url || inputs.target }}"
+          TARGET="${{ github.event.client_payload.target || github.event.client_payload.query || github.event.client_payload.target_url || inputs.target || inputs.prompt }}"
 
           echo "Starting Native C++ Heavy Execution: Mode=$MODE, Target=$TARGET"
 
@@ -59,7 +218,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-research-dossier
+          name: native-research-artifacts
           path: |
-            web-research/research_output/
+            web-research/out/
+            web-research/*.json
+            web-research/*.png
+            web-research/*.pdf
           if-no-files-found: ignore

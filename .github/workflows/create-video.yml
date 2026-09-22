@@ -2,25 +2,45 @@ name: Create Video
 
 on:
   repository_dispatch:
-    types: [video_dispatch, long_form]
+    types: [video_dispatch, long_form, video-agent, create_video]
   workflow_dispatch:
     inputs:
       prompt:
-        description: "Video Prompt"
+        description: "Video Topic / Context Prompt"
         required: true
-        default: "Epic documentary about ancient oceanic depths and geological time"
+        default: "Deep oceanic trenches and bioluminescent ecosystems of the midnight zone"
       duration_minutes:
-        description: "Duration in minutes"
+        description: "Duration in minutes (1-15)"
         required: false
-        default: "2"
-      captions:
-        description: "Captions toggle (true/false)"
+        default: "3"
+      category:
+        description: "Category (Documentary, Business & Finance, Science & Technology, Motivation, Travel & Lifestyle, Horror & Mystery, News & Facts)"
         required: false
-        default: "true"
+        default: "Documentary"
+      visual_style:
+        description: "Visual Style (Cinematic, Realistic, Corporate, 3D Render, Cyberpunk, Minimalist)"
+        required: false
+        default: "Cinematic"
+      resolution:
+        description: "Resolution (720p or 1080p)"
+        required: false
+        default: "1080p"
+      fps:
+        description: "FPS (30 or 60)"
+        required: false
+        default: "60"
       voice_gender:
         description: "Voice Gender (male/female)"
         required: false
         default: "male"
+      bgm:
+        description: "BGM (true/false)"
+        required: false
+        default: "true"
+      captions:
+        description: "Captions (true/false)"
+        required: false
+        default: "true"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || github.run_id }}
@@ -44,18 +64,24 @@ jobs:
       GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
       GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID }}
       GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+
       VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
       USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
       PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
-      VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'male' }}
-      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || 'Cosmic Documentary' }}
-      IMAGE_STYLE: ${{ github.event.client_payload.image_style || 'Cinematic Documentary' }}
-      ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '16:9' }}
+      CATEGORY: ${{ github.event.client_payload.category || github.event.client_payload.voice_persona || inputs.category || 'Documentary' }}
+      VISUAL_STYLE: ${{ github.event.client_payload.visual_style || github.event.client_payload.image_style || inputs.visual_style || 'Cinematic' }}
+      RESOLUTION: ${{ github.event.client_payload.resolution || github.event.client_payload.quality || inputs.resolution || '1080p' }}
+      FPS: ${{ github.event.client_payload.fps || github.event.client_payload.bitrate || inputs.fps || '60' }}
+      DURATION_MINUTES: ${{ github.event.client_payload.duration_minutes || inputs.duration_minutes || '3' }}
       DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds }}
-      DURATION_MINUTES: ${{ github.event.client_payload.duration_minutes || inputs.duration_minutes || '2' }}
+      VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'male' }}
+      BGM: ${{ github.event.client_payload.bgm || inputs.bgm || 'true' }}
       CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
-      CAPTION_SCALE: ${{ github.event.client_payload.caption_scale || '4' }}
+      CAPTION_STYLE: ${{ github.event.client_payload.caption_style || 'Dynamic' }}
+      CAPTION_SIZE: ${{ github.event.client_payload.caption_size || github.event.client_payload.caption_scale || 'Medium' }}
+      ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '16:9' }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -80,16 +106,16 @@ jobs:
           make -j$(nproc)
           ./hyper_editor --help || true
 
-      - name: Mark processing in Supabase
+      - name: Mark Scripting in Supabase
         if: env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
           curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"status":"processing","step":"Executing C++ Long-Form Pipeline","progress":5}' || true
+            -d '{"status":"processing","step":"Scripting","progress":10}' || true
 
-      - name: Execute Long-Form Video Pipeline (NVIDIA Brain, Pexels/Pixabay & C++ Engine)
+      - name: Execute Long-Form Video Pipeline
         run: python editor/long_form_pipeline.py
 
       - name: Upload Master MP4 to Supabase Storage
@@ -107,23 +133,22 @@ jobs:
 
       - name: Export Rendered Video to Google Drive
         if: success()
-        run: |
-          python editor/export_to_drive.py || true
+        run: python editor/export_to_drive.py || true
 
-      - name: Mark completed in Supabase
+      - name: Mark Pipeline Completed in Supabase
         if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
           curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d "{\"status\":\"completed\",\"progress\":100,\"step\":\"Finished\",\"video_url\":\"$USER_ID/$VIDEO_ID.mp4\"}" || true
+            -d "{\"status\":\"completed\",\"progress\":100,\"step\":\"Complete/Download\",\"video_url\":\"$USER_ID/$VIDEO_ID.mp4\"}" || true
 
-      - name: Mark failed
+      - name: Mark Pipeline Failed on Error
         if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
           curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
             -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"status":"failed","error":"Long-form C++ pipeline failed. Check GitHub Actions logs."}' || true
+            -d '{"status":"failed","step":"failed","error":"Long-form C++ pipeline failed. Check GitHub Actions logs."}' || true
