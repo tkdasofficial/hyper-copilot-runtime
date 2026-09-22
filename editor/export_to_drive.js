@@ -20,6 +20,9 @@ const PROMPT = env('PROMPT', 'Generated Video');
 const VIDEO_ID = env('VIDEO_ID', 'video_' + Date.now());
 const TARGET_FOLDER_ID = env('GDRIVE_MAIN_FOLDER_ID', '1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs');
 
+const SUPABASE_URL = env('SUPABASE_URL').replace(/\/+$/, '');
+const SUPABASE_SERVICE_ROLE_KEY = env('SUPABASE_SERVICE_ROLE_KEY');
+
 const GOOGLE_CLIENT_ID = env('GOOGLE_CLIENT_ID');
 const GOOGLE_CLIENT_SECRET = env('GOOGLE_CLIENT_SECRET');
 const GOOGLE_REFRESH_TOKEN = env('GOOGLE_REFRESH_TOKEN');
@@ -175,7 +178,34 @@ async function uploadVideo() {
         try {
           const uploaded = JSON.parse(body);
           console.log(`[Drive Upload Success] File ID: ${uploaded.id}`);
-          console.log(`[Drive URL] https://drive.google.com/file/d/${uploaded.id}/view`);
+          const directDownloadUrl = `https://drive.google.com/uc?export=download&id=${uploaded.id}`;
+          const viewUrl = `https://drive.google.com/file/d/${uploaded.id}/view`;
+          console.log(`[Drive Download URL] ${directDownloadUrl}`);
+          console.log(`[Drive View URL] ${viewUrl}`);
+
+          if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY && VIDEO_ID) {
+            try {
+              const patchData = JSON.stringify({
+                video_url: directDownloadUrl,
+                status: 'completed',
+                progress: 100,
+                step: 'Finished',
+                updated_at: new Date().toISOString()
+              });
+              await request(`${SUPABASE_URL}/rest/v1/videos?id=eq.${VIDEO_ID}`, {
+                method: 'PATCH',
+                headers: {
+                  'apikey': SUPABASE_SERVICE_ROLE_KEY,
+                  'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+                  'Content-Type': 'application/json',
+                  'Prefer': 'return=minimal'
+                }
+              }, patchData);
+              console.log(`[Supabase] Recorded video_url and completed status for video: ${VIDEO_ID}`);
+            } catch (syncErr) {
+              console.warn(`[Supabase] Metadata sync notice: ${syncErr.message}`);
+            }
+          }
         } catch (e) {
           console.log(`[Drive Upload Complete] Response: ${body}`);
         }
