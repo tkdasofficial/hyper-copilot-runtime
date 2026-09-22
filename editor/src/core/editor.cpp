@@ -131,9 +131,9 @@ bool AdvancedHeadlessEditor::renderVideoTrack(const Timeline& timeline, MediaEnc
             return a->trackIndex < b->trackIndex;
         });
 
-        // If no video clips are active on the timeline, generate synthetic visual backdrop
+        // If no video clips are active on the timeline, keep master canvas at background color
         if (activeClips.empty()) {
-            SyntheticMediaGenerator::generateVideoFrame(masterCanvas.get(), currentTime, 0);
+            // Already cleared with timeline.backgroundColor
         }
 
         for (const Clip* clip : activeClips) {
@@ -141,7 +141,7 @@ bool AdvancedHeadlessEditor::renderVideoTrack(const Timeline& timeline, MediaEnc
             double sourceTime = speedRampingTool_.mapTimelineToSourceTime(
                 clip->speedRamping, clipTime, clip->sourceOffset);
 
-            // Fetch video frame from file or synthetic generator
+            // Fetch video frame from file or hold/clear
             bool frameFetched = false;
             auto it = decoders.find(clip->filePath);
             if (it != decoders.end() && it->second) {
@@ -149,9 +149,16 @@ bool AdvancedHeadlessEditor::renderVideoTrack(const Timeline& timeline, MediaEnc
             }
 
             if (!frameFetched) {
-                // Synthetic procedural pattern
-                int pattern = clip->chromaKey.enabled ? 1 : 0;
-                SyntheticMediaGenerator::generateVideoFrame(clipBuffer.get(), sourceTime, pattern);
+                // Clear clipBuffer to solid black/background instead of rainbow test pattern
+                for (int y = 0; y < timeline.height; ++y) {
+                    uint8_t* row = clipBuffer->data[0] + y * clipBuffer->linesize[0];
+                    for (int x = 0; x < timeline.width; ++x) {
+                        row[x * 4 + 0] = bgR;
+                        row[x * 4 + 1] = bgG;
+                        row[x * 4 + 2] = bgB;
+                        row[x * 4 + 3] = 255;
+                    }
+                }
             }
 
             // 1. Frame Scaler Tool (Aspect ratio scaling & smart crop)
