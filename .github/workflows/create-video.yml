@@ -1,5 +1,5 @@
 name: Create Video
-run-name: Video: ${{ github.event.client_payload.title || github.event.client_payload.prompt || github.event.client_payload.content.prompt || inputs.prompt || 'Manual Build' }}
+run-name: Video - ${{ github.event.client_payload.title || github.event.client_payload.prompt || github.event.client_payload.content.prompt || inputs.prompt || 'Manual Build' }}
 
 # Trigger Restriction: Strictly allow ONLY API dispatches and manual execution.
 # Absolutely no push, pull_request, or schedule triggers so automatic work running will NOT happen
