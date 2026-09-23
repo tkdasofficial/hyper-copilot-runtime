@@ -59,6 +59,7 @@ public:
     void setResolution(int width, int height);
     void setFps(int fps);
     void addScene(const SceneSegment& scene);
+    void addSegment(const SceneSegment& scene) { addScene(scene); }
     void clear();
 
     const std::vector<SceneSegment>& getScenes() const { return m_scenes; }
