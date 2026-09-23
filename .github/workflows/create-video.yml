@@ -1,9 +1,6 @@
-name: Create Video
-run-name: Video - ${{ github.event.client_payload.title || github.event.client_payload.prompt || github.event.client_payload.content.prompt || inputs.prompt || 'Manual Build' }}
+name: Video
+run-name: Video - ${{ github.event.client_payload.prompt || inputs.prompt || github.event.client_payload.video_id || 'Render' }}
 
-# Trigger Restriction: Strictly allow ONLY API dispatches and manual execution.
-# Absolutely no push, pull_request, or schedule triggers so automatic work running will NOT happen
-# and workflow runs strictly when Supabase dispatches it.
 on:
   repository_dispatch:
     types: [create-video, create_video, long_form, long, video, video_dispatch, video-agent]
@@ -28,12 +25,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.identity.video_id || github.event.client_payload.video_id || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  create-video:
-    name: create-video
-    runs-on: ubuntu-latest
+  render-video:
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -43,102 +39,91 @@ jobs:
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID || secrets.GOOGLE_CLOUD_API_ID }}
-      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET || secrets.GOOGLE_CLOUD_API_SECRET }}
-      GOOGLE_CLOUD_API_ID: ${{ secrets.GOOGLE_CLIENT_ID || secrets.GOOGLE_CLOUD_API_ID }}
-      GOOGLE_CLOUD_API_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET || secrets.GOOGLE_CLOUD_API_SECRET }}
-      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN || secrets.GDRIVE_REFRESH_TOKEN }}
-      GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID || secrets.GDRIVE_MAIN_FOLDER_ID || '1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs' }}
-      GOOGLE_SERVICE_ACCOUNT_ID: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_ID || secrets.GDRIVE_CLIENT_EMAIL }}
-      GOOGLE_MAIL_REFRESH_TOKEN: ${{ secrets.GOOGLE_MAIL_REFRESH_TOKEN }}
-      GDRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN || secrets.GDRIVE_REFRESH_TOKEN }}
-      GDRIVE_DELEGATED_USER: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_ID || secrets.GDRIVE_DELEGATED_USER || 'tusharkantidasofficial@gmail.com' }}
-      GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID || secrets.GDRIVE_MAIN_FOLDER_ID || '1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs' }}
-      GDRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID || secrets.GDRIVE_FOLDER_ID }}
-      GDRIVE_CLIENT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_ID || secrets.GDRIVE_CLIENT_EMAIL }}
+      GOOGLE_CLOUD_API_ID: ${{ secrets.GOOGLE_CLOUD_API_ID }}
+      GOOGLE_CLOUD_API_SECRET: ${{ secrets.GOOGLE_CLOUD_API_SECRET }}
+      GDRIVE_DELEGATED_USER: ${{ secrets.GDRIVE_DELEGATED_USER || 'tusharkantidasofficial@gmail.com' }}
+      GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID || '1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs' }}
+      GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+      GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
       GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
       SERVICE_ACCOUNT_JSON: ${{ secrets.SERVICE_ACCOUNT_JSON }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
       GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
-      CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
-      VIDEO_ID: ${{ github.event.client_payload.identity.video_id || github.event.client_payload.video_id || github.run_id }}
-      USER_ID: ${{ github.event.client_payload.identity.user_id || github.event.client_payload.user_id || 'github_actions' }}
-      PROMPT: ${{ github.event.client_payload.content.prompt || github.event.client_payload.prompt || inputs.prompt }}
-      NEGATIVE_PROMPT: ${{ github.event.client_payload.content.negative_prompt || github.event.client_payload.negative_prompt }}
-      VOICE_GENDER: ${{ github.event.client_payload.audio.voice_gender || github.event.client_payload.voice_gender || inputs.voice_gender || 'male' }}
-      VOICE_PERSONA: ${{ github.event.client_payload.audio.voice_persona || github.event.client_payload.voice_persona || 'Cosmic Documentary' }}
-      CATEGORY: ${{ github.event.client_payload.audio.category || github.event.client_payload.category }}
-      BGM: ${{ github.event.client_payload.audio.bgm || github.event.client_payload.bgm || 'true' }}
-      IMAGE_STYLE: ${{ github.event.client_payload.visual.image_style || github.event.client_payload.image_style || 'Cinematic Documentary' }}
-      VISUAL_STYLE: ${{ github.event.client_payload.visual.visual_style || github.event.client_payload.visual_style || 'Cinematic' }}
-      ASPECT_RATIO: ${{ github.event.client_payload.visual.aspect_ratio || github.event.client_payload.aspect_ratio || '16:9' }}
-      RESOLUTION: ${{ github.event.client_payload.visual.resolution || github.event.client_payload.resolution || '1080p' }}
-      FPS: ${{ github.event.client_payload.visual.fps || github.event.client_payload.fps || '60' }}
-      DURATION_SECONDS: ${{ github.event.client_payload.timing.duration_seconds || github.event.client_payload.duration_seconds }}
-      DURATION_MINUTES: ${{ github.event.client_payload.timing.duration_minutes || github.event.client_payload.duration_minutes || inputs.duration_minutes || '2' }}
-      CAPTIONS: ${{ github.event.client_payload.caption.captions || github.event.client_payload.captions || inputs.captions || 'true' }}
-      CAPTION_STYLE: ${{ github.event.client_payload.caption.caption_style || github.event.client_payload.caption_style || 'Dynamic' }}
-      CAPTION_SIZE: ${{ github.event.client_payload.caption.caption_size || github.event.client_payload.caption_size || 'Medium' }}
-      CAPTION_SCALE: ${{ github.event.client_payload.caption.caption_scale || github.event.client_payload.caption_scale || '4' }}
-
+      VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
+      USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
+      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
+      NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
+      VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'male' }}
+      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || 'Cosmic Documentary' }}
+      IMAGE_STYLE: ${{ github.event.client_payload.image_style || 'Cinematic Documentary' }}
+      ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '16:9' }}
+      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds }}
+      DURATION_MINUTES: ${{ github.event.client_payload.duration_minutes || inputs.duration_minutes || '2' }}
+      CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
+      CAPTION_SCALE: ${{ github.event.client_payload.caption_scale || '4' }}
     steps:
-      - name: 1. Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: 2. Setup Build & Media Environment
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install System & C++ Dependencies
         run: |
+          export DEBIAN_FRONTEND=noninteractive
+          export NEEDRESTART_MODE=l
           sudo apt-get update -y
-          sudo apt-get install -y \
+          sudo NEEDRESTART_MODE=l apt-get install -y \
             build-essential cmake pkg-config \
             libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libavutil-dev \
             libfreetype-dev libharfbuzz-dev nlohmann-json3-dev libomp-dev fonts-dejavu-core ffmpeg
-          sudo fc-cache -fv || true
-          pip install edge-tts || true
+          pip install requests edge-tts cryptography
 
-      - name: 3. Compile Strict C++ Native Video Engine & Pipelines
+      - name: Compile C++ Headless Editor
         run: |
           mkdir -p editor/build
           cd editor/build
           cmake -DCMAKE_BUILD_TYPE=Release ..
-          make -j$(nproc)
+          make -j2
           ./hyper_editor --help || true
 
-      - name: 4. Execute Strict C++ Video Pipeline
+      - name: Mark processing in Supabase
+        if: env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
-          if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"processing","step":"Executing Video Engine (16:9)","progress":5}' || true
+
+      - name: Execute Video Pipeline (Brain, Assets & C++ Engine)
+        run: python editor/long_form_pipeline.py
+
+      - name: Export Directly to Google Drive (Videos Folder)
+        if: success()
+        run: |
+          python editor/export_to_drive.py
+
+      - name: Verify Completion in Supabase
+        if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
+        run: |
+          STATUS_VAL=$(curl -sS "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID&select=status" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "")
+          if [ "$STATUS_VAL" != "completed" ]; then
             curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
               -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
               -H "Content-Type: application/json" \
-              -d '{"status":"processing","step":"Executing C++ Video Engine","progress":10}' || true
+              -d '{"status":"completed","progress":100,"step":"Finished"}' || true
           fi
-          editor/build/hyper_pipeline || editor/build/hyper_long_form
 
-      - name: 5. Export to Storage & Finalize Status
-        if: always()
+      - name: Mark failed
+        if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
         run: |
-          if [ "${{ job.status }}" = "success" ]; then
-            editor/build/hyper_drive_export || true
-            if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then
-              STATUS_VAL=$(curl -sS "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID&select=status" \
-                -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-                -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "")
-              if [ "$STATUS_VAL" != "completed" ]; then
-                curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
-                  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-                  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-                  -H "Content-Type: application/json" \
-                  -d '{"status":"completed","progress":100,"step":"Finished"}' || true
-              fi
-            fi
-          else
-            if [ -n "$SUPABASE_URL" ] && [ -n "$SUPABASE_SERVICE_ROLE_KEY" ]; then
-              curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
-                -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-                -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-                -H "Content-Type: application/json" \
-                -d '{"status":"failed","error":"Video pipeline execution failed. Check GitHub Actions logs."}' || true
-            fi
-            exit 1
-          fi
+          curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"failed","error":"Video pipeline failed. Check GitHub Actions logs."}' || true
