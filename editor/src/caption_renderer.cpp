@@ -1,11 +1,9 @@
 #include "caption_renderer.hpp"
-#include "scene_builder.hpp"
 #include <fstream>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
 #include <cmath>
-#include <iostream>
 
 namespace hyper {
 
@@ -26,15 +24,6 @@ void CaptionRenderer::setStyle(CaptionStyle style) {
     m_style = style;
 }
 
-void CaptionRenderer::addWord(const std::string& word, double start_time, double end_time) {
-    if (word.empty()) return;
-    WordTiming wt;
-    wt.word = word;
-    wt.start_time = start_time;
-    wt.end_time = (end_time > start_time) ? end_time : (start_time + 0.25);
-    m_rawWords.push_back(wt);
-}
-
 void CaptionRenderer::addSegment(const CaptionSegment& segment) {
     m_segments.push_back(segment);
 }
@@ -43,38 +32,37 @@ void CaptionRenderer::setSegments(const std::vector<CaptionSegment>& segments) {
     m_segments = segments;
 }
 
-void CaptionRenderer::clear() {
-    m_rawWords.clear();
-    m_segments.clear();
-}
-
 int CaptionRenderer::calculateFontSize() const {
-    // 1080p horizontal reference (1920x1080):
+    // Exact mapping relative to 1080p horizontal (1920x1080):
     // Small: 28px, Medium: 42px, Large: 56px
-    // 1080p vertical reference (1080x1920):
-    // Small: 48px, Medium: 72px, Large: 96px
-    bool isVertical = (m_height > m_width);
+    // For vertical 9:16 (1080x1920), height is 1920, so we scale by height / 1080.
     double base = 42.0;
-
-    if (isVertical) {
-        switch (m_size) {
-            case CaptionSize::Small:  base = 48.0; break;
-            case CaptionSize::Medium: base = 72.0; break;
-            case CaptionSize::Large:  base = 96.0; break;
-        }
-        double scale = static_cast<double>(m_height) / 1920.0;
-        int result = static_cast<int>(std::round(base * (scale > 0 ? scale : 1.0)));
-        return std::max(result, 24);
-    } else {
-        switch (m_size) {
-            case CaptionSize::Small:  base = 28.0; break;
-            case CaptionSize::Medium: base = 42.0; break;
-            case CaptionSize::Large:  base = 56.0; break;
-        }
-        double scale = static_cast<double>(m_height) / 1080.0;
-        int result = static_cast<int>(std::round(base * (scale > 0 ? scale : 1.0)));
-        return std::max(result, 18);
+    switch (m_size) {
+        case CaptionSize::Small:
+            base = 28.0;
+            break;
+        case CaptionSize::Medium:
+            base = 42.0;
+            break;
+        case CaptionSize::Large:
+            base = 56.0;
+            break;
     }
+
+    // Reference resolution is 1080p
+    double refHeight = (m_height > m_width) ? 1920.0 : 1080.0;
+    double scale = static_cast<double>(m_height) / refHeight;
+
+    if (m_height > m_width) {
+        // Vertical mobile view (e.g. 1080x1920) benefits from slightly larger legible text
+        // Small: 48px, Medium: 72px, Large: 96px on 1080x1920
+        base = (m_size == CaptionSize::Small) ? 48.0 :
+               (m_size == CaptionSize::Medium) ? 72.0 : 96.0;
+        scale = static_cast<double>(m_height) / 1920.0;
+    }
+
+    int result = static_cast<int>(std::round(base * (scale > 0 ? scale : 1.0)));
+    return std::max(result, 16);
 }
 
 std::string CaptionRenderer::formatTimeAss(double seconds) const {
@@ -95,179 +83,20 @@ std::string CaptionRenderer::formatTimeAss(double seconds) const {
     return oss.str();
 }
 
-bool CaptionRenderer::loadFromWordsJson(const std::string& jsonFilePath) {
-    std::ifstream file(jsonFilePath);
-    if (!file.is_open()) {
-        std::cerr << "[CaptionRenderer] Could not open words JSON: " << jsonFilePath << std::endl;
-        return false;
-    }
-
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    m_rawWords.clear();
-
-    // Parse array of word objects
-    // Handles formats like:
-    // [{"word": "the", "start_time": 0.12, "end_time": 0.35}, ...]
-    // or {"text": "the", "start": 0.12, "end": 0.35}
-    size_t pos = 0;
-    while (pos < content.size()) {
-        size_t wKey = content.find("\"word\"", pos);
-        if (wKey == std::string::npos) {
-            wKey = content.find("\"text\"", pos);
-        }
-        if (wKey == std::string::npos) break;
-
-        size_t valStart = content.find(":", wKey);
-        if (valStart == std::string::npos) break;
-        size_t q1 = content.find("\"", valStart);
-        if (q1 == std::string::npos) break;
-        size_t q2 = content.find("\"", q1 + 1);
-        if (q2 == std::string::npos) break;
-        std::string wordText = content.substr(q1 + 1, q2 - q1 - 1);
-
-        double st = 0.0;
-        double et = 0.0;
-
-        // Find start time
-        size_t sKey = content.find("\"start", q2);
-        if (sKey != std::string::npos && sKey < content.find("}", q2)) {
-            size_t c1 = content.find(":", sKey);
-            if (c1 != std::string::npos) {
-                st = std::stod(content.substr(c1 + 1));
-            }
-        }
-
-        // Find end time
-        size_t eKey = content.find("\"end", q2);
-        if (eKey != std::string::npos && eKey < content.find("}", q2)) {
-            size_t c2 = content.find(":", eKey);
-            if (c2 != std::string::npos) {
-                et = std::stod(content.substr(c2 + 1));
-            }
-        }
-
-        if (et <= st) {
-            et = st + 0.25;
-        }
-
-        addWord(wordText, st, et);
-        pos = q2 + 1;
-    }
-
-    std::cout << "[CaptionRenderer] Loaded " << m_rawWords.size() << " word timings from JSON." << std::endl;
-    buildSegmentsFromRawWords();
-    return !m_rawWords.empty();
-}
-
-bool CaptionRenderer::loadFromScenes(const std::vector<SceneSegment>& scenes) {
-    m_rawWords.clear();
-    m_segments.clear();
-
-    double accumTime = 0.0;
-    for (const auto& sc : scenes) {
-        if (sc.narration_text.empty()) {
-            accumTime += sc.duration;
-            continue;
-        }
-
-        // Split narration into individual words
-        std::vector<std::string> words;
-        std::istringstream iss(sc.narration_text);
-        std::string w;
-        while (iss >> w) {
-            words.push_back(w);
-        }
-
-        if (words.empty()) {
-            accumTime += sc.duration;
-            continue;
-        }
-
-        double sceneStart = (sc.start_time >= 0) ? sc.start_time : accumTime;
-        double sceneDur = (sc.duration > 0) ? sc.duration : 4.0;
-        double wordDur = sceneDur / static_cast<double>(words.size());
-        if (wordDur < 0.15) wordDur = 0.15;
-
-        for (size_t i = 0; i < words.size(); ++i) {
-            double st = sceneStart + i * wordDur;
-            double et = std::min(sceneStart + sceneDur, st + wordDur * 0.95);
-            addWord(words[i], st, et);
-        }
-
-        accumTime = sceneStart + sceneDur;
-    }
-
-    std::cout << "[CaptionRenderer] Synthesized " << m_rawWords.size() << " word timings from scenes narration." << std::endl;
-    buildSegmentsFromRawWords();
-    return !m_rawWords.empty();
-}
-
-bool CaptionRenderer::loadFromScript(const std::string& script, double totalDuration) {
-    m_rawWords.clear();
-    m_segments.clear();
-
-    std::vector<std::string> words;
-    std::istringstream iss(script);
-    std::string w;
-    while (iss >> w) {
-        words.push_back(w);
-    }
-
-    if (words.empty() || totalDuration <= 0) return false;
-
-    double wordDur = totalDuration / static_cast<double>(words.size());
-    for (size_t i = 0; i < words.size(); ++i) {
-        double st = i * wordDur;
-        double et = std::min(totalDuration, st + wordDur * 0.95);
-        addWord(words[i], st, et);
-    }
-
-    buildSegmentsFromRawWords();
-    return true;
-}
-
-void CaptionRenderer::buildSegmentsFromRawWords() {
-    m_segments.clear();
-    if (m_rawWords.empty()) return;
-
-    // Rhythmic phrase chunking:
-    // Vertical mobile 9:16 -> 3 to 4 words per subtitle screen for maximum punch and zero clipping
-    // Horizontal 16:9 -> 4 to 5 words per subtitle screen
-    bool isVertical = (m_height > m_width);
-    size_t chunkSize = isVertical ? 3 : 5;
-
-    for (size_t i = 0; i < m_rawWords.size(); i += chunkSize) {
-        size_t endIdx = std::min(i + chunkSize, m_rawWords.size());
-        CaptionSegment seg;
-        seg.start_time = m_rawWords[i].start_time;
-        seg.end_time = m_rawWords[endIdx - 1].end_time;
-
-        std::string fullText;
-        for (size_t j = i; j < endIdx; ++j) {
-            seg.words.push_back(m_rawWords[j]);
-            if (!fullText.empty()) fullText += " ";
-            fullText += m_rawWords[j].word;
-        }
-        seg.full_text = fullText;
-        m_segments.push_back(seg);
-    }
-}
-
 std::string CaptionRenderer::generateAssContent() const {
     int fontSize = calculateFontSize();
-    bool isVertical = (m_height > m_width);
-    int outline = isVertical ? 5 : 4;
-    int shadow = 2;
-    int marginV = isVertical ? static_cast<int>(m_height * 0.16) : static_cast<int>(m_height * 0.08);
+    int outline = (m_height > 1080) ? 5 : 3;
+    int shadow = (m_height > 1080) ? 3 : 2;
+    int marginV = (m_height > m_width) ? static_cast<int>(m_height * 0.18) : static_cast<int>(m_height * 0.08);
 
     // Color definitions (ASS uses &HAABBGGRR)
     // Primary: White (&H00FFFFFF)
-    // Active Karaoke Highlight: Vivid Golden Yellow (&H0000E6FF) or Bright Cyan (&H0000FFFF)
-    std::string highlightColor = "&H0000E6FF"; // Vibrant Gold/Yellow in BGR
-    std::string dimColor = "&H00C0C0C0";       // Soft Silver for upcoming words in cue
+    // Active Karaoke Highlight: Vivid Golden Yellow (&H0000E6FF) or Neon Cyan
+    std::string highlightColor = "&H0000E6FF"; // Vibrant Golden Yellow in BGR
+    std::string dimColor = "&H00C0C0C0";       // Soft white-grey for upcoming words
 
     if (m_style == CaptionStyle::Bold) {
-        highlightColor = "&H0000FFFF"; // Electric Cyan in BGR
+        highlightColor = "&H0000FFFF"; // Bright Cyan in BGR
         outline += 1;
     } else if (m_style == CaptionStyle::Minimal) {
         highlightColor = "&H00FFFFFF";
@@ -276,8 +105,8 @@ std::string CaptionRenderer::generateAssContent() const {
 
     std::ostringstream ss;
     ss << "[Script Info]\n"
-       << "; Script generated by HyperEditor C++ Subtitle Engine\n"
-       << "Title: Hyper Copilot Dynamic Synchronized Captions\n"
+       << "; Script generated by HyperEditor C++ Caption Engine\n"
+       << "Title: Hyper Copilot Dynamic Burn-In Captions\n"
        << "ScriptType: v4.00+\n"
        << "WrapStyle: 0\n"
        << "ScaledBorderAndShadow: yes\n"
@@ -292,6 +121,7 @@ std::string CaptionRenderer::generateAssContent() const {
 
     for (const auto& seg : m_segments) {
         if (seg.words.empty()) {
+            // Fallback for segment without word timings
             ss << "Dialogue: 0," << formatTimeAss(seg.start_time) << ","
                << formatTimeAss(seg.end_time) << ",Default,,0,0,0,,"
                << "{\\an2}" << seg.full_text << "\n";
@@ -299,12 +129,12 @@ std::string CaptionRenderer::generateAssContent() const {
         }
 
         // Real-time word-level synchronization (Karaoke highlight)
-        // For each active word in the phrase, emit a dialogue cue with the active word illuminated
+        // For each active word in the segment, generate a dialogue line with the active word illuminated
         for (size_t i = 0; i < seg.words.size(); ++i) {
             double wordStart = seg.words[i].start_time;
             double wordEnd = seg.words[i].end_time;
             if (wordEnd <= wordStart) {
-                wordEnd = wordStart + 0.22;
+                wordEnd = wordStart + 0.25;
             }
 
             // Cap within segment bounds
@@ -320,13 +150,13 @@ std::string CaptionRenderer::generateAssContent() const {
             for (size_t j = 0; j < seg.words.size(); ++j) {
                 const auto& w = seg.words[j];
                 if (j == i) {
-                    // Active word: illuminated in vivid highlight color with bold accent
+                    // Active word: highlighted with vivid color and bold accent
                     line << "{\\c" << highlightColor << "}{\\b1}" << w.word << "{\\b0}{\\c&H00FFFFFF&}";
                 } else if (j < i) {
-                    // Already spoken in current phrase: clean white
+                    // Spoken words: standard white
                     line << "{\\c&H00FFFFFF&}" << w.word;
                 } else {
-                    // Upcoming in current phrase: dimmed silver
+                    // Upcoming words: dimmed for rhythm
                     line << "{\\c" << dimColor << "}" << w.word << "{\\c&H00FFFFFF&}";
                 }
 
@@ -345,11 +175,11 @@ bool CaptionRenderer::exportAssFile(const std::string& filePath) const {
     std::ofstream out(filePath);
     if (!out.is_open()) return false;
     out << generateAssContent();
-    std::cout << "[CaptionRenderer] Exported ASS captions to " << filePath << std::endl;
     return true;
 }
 
 std::string CaptionRenderer::getFfmpegFilterString(const std::string& assFilePath) const {
+    // Escape colons and backslashes for FFmpeg filter syntax
     std::string escaped;
     for (char c : assFilePath) {
         if (c == ':' || c == '\\' || c == '\'') {

@@ -19,9 +19,6 @@ struct CaptionSegment {
     std::vector<WordTiming> words;
 };
 
-// Forward declaration
-struct SceneSegment;
-
 enum class CaptionSize {
     Small,
     Medium,
@@ -29,33 +26,25 @@ enum class CaptionSize {
 };
 
 enum class CaptionStyle {
-    Dynamic,  // Vibrant golden yellow karaoke word tracking
-    Bold,     // High-contrast clean cyan with thick black stroke
+    Dynamic,  // Vibrant yellow/gold karaoke word tracking
+    Bold,     // High-contrast clean white with thick black stroke
     Minimal   // Subtle modern center caption
 };
 
 class CaptionRenderer {
 public:
-    CaptionRenderer(int width = 1920, int height = 1080, CaptionSize size = CaptionSize::Medium, CaptionStyle style = CaptionStyle::Dynamic);
+    CaptionRenderer(int width, int height, CaptionSize size = CaptionSize::Medium, CaptionStyle style = CaptionStyle::Dynamic);
 
     void setResolution(int width, int height);
     void setSize(CaptionSize size);
     void setStyle(CaptionStyle style);
-
-    void addWord(const std::string& word, double start_time, double end_time);
     void addSegment(const CaptionSegment& segment);
     void setSegments(const std::vector<CaptionSegment>& segments);
-    void clear();
 
-    // Data Loaders
-    bool loadFromWordsJson(const std::string& jsonFilePath);
-    bool loadFromScenes(const std::vector<SceneSegment>& scenes);
-    bool loadFromScript(const std::string& script, double totalDuration);
-
-    // Font size in pixels relative to video resolution (Small / Medium / Large)
+    // Calculates font size in pixels relative to 1080p reference
     int calculateFontSize() const;
 
-    // Generates complete ASS subtitle content with rhythmic phrase chunking & karaoke active word highlighting
+    // Generates complete ASS subtitle content with karaoke word highlight tags
     std::string generateAssContent() const;
 
     // Exports ASS subtitle file to disk
@@ -67,19 +56,14 @@ public:
     static CaptionSize parseSize(const std::string& str);
     static CaptionStyle parseStyle(const std::string& str);
 
-    const std::vector<WordTiming>& getWords() const { return m_rawWords; }
-    size_t getWordCount() const { return m_rawWords.size(); }
-
 private:
     int m_width;
     int m_height;
     CaptionSize m_size;
     CaptionStyle m_style;
-    std::vector<WordTiming> m_rawWords;
     std::vector<CaptionSegment> m_segments;
 
     std::string formatTimeAss(double seconds) const;
-    void buildSegmentsFromRawWords();
 };
 
 } // namespace hyper
