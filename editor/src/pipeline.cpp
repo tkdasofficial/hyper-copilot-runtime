@@ -236,8 +236,8 @@ int main(int argc, char* argv[]) {
     config.user_id = hyper::getEnv("USER_ID", "local_user");
     config.aspect_ratio = hyper::getEnv("ASPECT_RATIO", "16:9");
     config.quality = hyper::getEnv("RESOLUTION", "1080p");
-    config.fps = std::atoi(hyper::getEnv("FPS", "60").c_str());
-    if (config.fps <= 0) config.fps = 60;
+    config.fps = std::atoi(hyper::getEnv("FPS", "30").c_str());
+    if (config.fps <= 0) config.fps = 30;
 
     bool isVertical = (config.aspect_ratio == "9:16" || config.aspect_ratio == "vertical");
     config.width = isVertical ? 1080 : 1920;
