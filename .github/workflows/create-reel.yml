@@ -102,12 +102,13 @@ jobs:
             -d '{"status":"processing","step":"Executing Reel Engine (9:16)","progress":10}' || true
 
       - name: Render Reel via Primary C++ Engine Pipeline
-        run: python editor/long_form_pipeline.py
+        run: |
+          editor/build/hyper_pipeline || editor/build/hyper_long_form
 
       - name: Export Directly to Google Drive (Videos Folder)
         if: success()
         run: |
-          python editor/export_to_drive.py
+          editor/build/hyper_drive_export || true
 
       - name: Verify Completion in Supabase
         if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
