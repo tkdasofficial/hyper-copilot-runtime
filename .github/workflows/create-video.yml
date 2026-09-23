@@ -1,5 +1,5 @@
 name: Create Video
-run-name: Video: ${{ github.event.client_payload.title || github.event.client_payload.prompt || inputs.prompt || 'Manual Build' }}
+run-name: "Video - ${{ github.event.client_payload.title || github.event.client_payload.prompt || inputs.prompt || 'Manual Build' }}"
 
 on:
   repository_dispatch:
@@ -9,11 +9,11 @@ on:
       prompt:
         description: "Video prompt or topic"
         required: true
-        type: string
+        default: "Cosmic journey through deep space"
       video_id:
         description: "Supabase Video ID (optional)"
         required: false
-        type: string
+        default: ""
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || inputs.video_id || github.run_id }}
