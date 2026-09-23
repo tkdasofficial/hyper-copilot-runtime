@@ -1,19 +1,9 @@
-name: Create Video
-run-name: Video - ${{ github.event.client_payload.title || github.event.client_payload.prompt || inputs.prompt || 'Manual Dispatch' }}
+name: create-video
+run-name: ${{ github.event.client_payload.title || github.event.client_payload.prompt || 'create-video' }}
 
 on:
   repository_dispatch:
     types: [create-video, create_video, long_form, long]
-  workflow_dispatch:
-    inputs:
-      prompt:
-        description: "Video Prompt / Title"
-        required: true
-        default: "The Mysteries of the Deep Sea Ecosystems"
-      voice_gender:
-        description: "Voice Gender (male/female)"
-        required: false
-        default: "male"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || github.run_id }}
@@ -21,6 +11,7 @@ concurrency:
 
 jobs:
   create-video:
+    name: create-video
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -35,15 +26,15 @@ jobs:
       GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-      GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID || '1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs' }}
+      GDRIVE_MAIN_FOLDER_ID: ${{ secrets.GDRIVE_MAIN_FOLDER_ID }}
       GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
       GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
-      GDRIVE_DELEGATED_USER: ${{ secrets.GDRIVE_DELEGATED_USER || 'tusharkantidasofficial@gmail.com' }}
+      GDRIVE_DELEGATED_USER: ${{ secrets.GDRIVE_DELEGATED_USER }}
       VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
       USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
-      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
+      PROMPT: ${{ github.event.client_payload.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
-      VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'male' }}
+      VOICE_GENDER: ${{ github.event.client_payload.voice_gender || 'male' }}
       VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || github.event.client_payload.category || 'Documentary' }}
       VIDEO_STYLE: ${{ github.event.client_payload.visual_style || github.event.client_payload.image_style || 'Cinematic' }}
       ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '16:9' }}
