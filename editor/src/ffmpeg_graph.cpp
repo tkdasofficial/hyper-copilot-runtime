@@ -41,9 +41,9 @@ std::string FfmpegGraph::buildFilterComplex() const {
             fc << "setpts=PTS-STARTPTS,";
         }
 
-        // Determine Ken Burns Camera Motion
-        CameraMotion motion = c.motion;
-        if (motion == CameraMotion::None && m_config.ken_burns_enabled) {
+        // Determine Ken Burns Camera Motion (only applied on still image inputs to preserve RAM)
+        CameraMotion motion = c.is_image ? c.motion : CameraMotion::None;
+        if (c.is_image && motion == CameraMotion::None && m_config.ken_burns_enabled) {
             if (m_config.motion_type == "dynamic") {
                 int mod = static_cast<int>(i % 4);
                 if (mod == 0) motion = CameraMotion::ZoomIn;
