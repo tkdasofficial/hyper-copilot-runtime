@@ -1,12 +1,22 @@
-name: create-video
-run-name: ${{ github.event.client_payload.title || github.event.client_payload.prompt || 'create-video' }}
+name: Create Video
+run-name: Video: ${{ github.event.client_payload.title || github.event.client_payload.prompt || inputs.prompt || 'Manual Build' }}
 
 on:
   repository_dispatch:
     types: [create-video, create_video, long_form, long]
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Video prompt or topic"
+        required: true
+        type: string
+      video_id:
+        description: "Supabase Video ID (optional)"
+        required: false
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || inputs.video_id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -14,6 +24,7 @@ jobs:
     name: create-video
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -30,9 +41,9 @@ jobs:
       GDRIVE_CLIENT_EMAIL: ${{ secrets.GDRIVE_CLIENT_EMAIL }}
       GDRIVE_PRIVATE_KEY: ${{ secrets.GDRIVE_PRIVATE_KEY }}
       GDRIVE_DELEGATED_USER: ${{ secrets.GDRIVE_DELEGATED_USER }}
-      VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
-      USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
-      PROMPT: ${{ github.event.client_payload.prompt }}
+      VIDEO_ID: ${{ github.event.client_payload.video_id || inputs.video_id || github.run_id }}
+      USER_ID: ${{ github.event.client_payload.user_id || 'github-actions' }}
+      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
       VOICE_GENDER: ${{ github.event.client_payload.voice_gender || 'male' }}
       VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || github.event.client_payload.category || 'Documentary' }}
@@ -45,10 +56,10 @@ jobs:
       RENDER_FPS: "30"
 
     steps:
-      - name: Step 1: Checkout Repository
+      - name: "Step 1: Checkout Repository"
         uses: actions/checkout@v4
 
-      - name: Step 2: Install Dependencies & Compile
+      - name: "Step 2: Install Dependencies & Compile"
         run: |
           sudo apt-get update -y
           sudo apt-get install -y \
@@ -62,20 +73,20 @@ jobs:
           chmod +x editor/build.sh || true
           ./editor/build.sh || echo "C++ build warning; FFmpeg master pipeline active"
 
-      - name: Step 3: Import Stock Footages & Run Editor
+      - name: "Step 3: Import Stock Footages & Run Editor"
         run: |
-          node editor/prepare_assets.js
+          node editor/prepare-assets.js
 
-      - name: Step 4: MP4 Rendering
+      - name: "Step 4: MP4 Rendering"
         run: |
-          node editor/export_video.js
+          node editor/export-video.js
 
-      - name: Step 5: Drive Upload & Supabase Sync
+      - name: "Step 5: Drive Upload & Supabase Sync"
         if: always()
         run: |
-          node editor/post_process_sync.js
+          node editor/post-process-sync.js
 
-      - name: Step 6: Cleanup Workspace
+      - name: "Step 6: Cleanup Workspace"
         if: always()
         run: |
           rm -rf temp_* *.tmp assets/*.mp4 assets/*.mp3 || true
