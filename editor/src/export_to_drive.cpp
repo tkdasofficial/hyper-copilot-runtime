@@ -27,8 +27,8 @@ public:
                   << "Video ID: " << videoId << "\n"
                   << "========================================================\n";
 
-        std::string mainFolderId = getEnv("GDRIVE_MAIN_FOLDER_ID", "1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs");
-        std::string delegatedUser = getEnv("GDRIVE_DELEGATED_USER", "tusharkantidasofficial@gmail.com");
+        std::string mainFolderId = getEnv("GOOGLE_DRIVE_FOLDER_ID", getEnv("GDRIVE_MAIN_FOLDER_ID", "1JGjibA287ds3SFoT_Fl2z8cJ96eCDUFs"));
+        std::string delegatedUser = getEnv("GOOGLE_SERVICE_ACCOUNT_ID", getEnv("GDRIVE_DELEGATED_USER", "tusharkantidasofficial@gmail.com"));
         std::string supabaseUrl = getEnv("SUPABASE_URL");
         std::string supabaseKey = getEnv("SUPABASE_SERVICE_ROLE_KEY");
 
