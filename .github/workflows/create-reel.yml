@@ -24,12 +24,12 @@ on:
         default: "15"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.client_payload.video_id || github.run_id }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.client_payload.identity.video_id || github.event.client_payload.video_id || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   render-reel:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -57,17 +57,17 @@ jobs:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
       GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
-      VIDEO_ID: ${{ github.event.client_payload.identity.video_id || github.event.client_payload.video_id || github.run_id }}
-      USER_ID: ${{ github.event.client_payload.identity.user_id || github.event.client_payload.user_id || 'github_actions' }}
-      PROMPT: ${{ github.event.client_payload.content.prompt || github.event.client_payload.prompt || inputs.prompt }}
-      NEGATIVE_PROMPT: ${{ github.event.client_payload.content.negative_prompt || github.event.client_payload.negative_prompt }}
-      VOICE_GENDER: ${{ github.event.client_payload.audio.voice_gender || github.event.client_payload.voice_gender || inputs.voice_gender || 'female' }}
-      VOICE_PERSONA: ${{ github.event.client_payload.audio.voice_persona || github.event.client_payload.voice_persona || 'Dynamic Storyteller' }}
-      IMAGE_STYLE: ${{ github.event.client_payload.visual.image_style || github.event.client_payload.visual.visual_style || github.event.client_payload.image_style || 'Cinematic 3D' }}
-      ASPECT_RATIO: ${{ github.event.client_payload.visual.aspect_ratio || github.event.client_payload.aspect_ratio || '9:16' }}
-      DURATION_SECONDS: ${{ github.event.client_payload.timing.duration_seconds || github.event.client_payload.duration_seconds || inputs.duration_seconds || '15' }}
-      CAPTIONS: ${{ github.event.client_payload.caption.captions || github.event.client_payload.captions || inputs.captions || 'true' }}
-      CAPTION_SCALE: ${{ github.event.client_payload.caption.caption_scale || github.event.client_payload.caption_scale || '4' }}
+      VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
+      USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
+      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
+      NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
+      VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'female' }}
+      VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || 'Dynamic Storyteller' }}
+      IMAGE_STYLE: ${{ github.event.client_payload.image_style || 'Cinematic 3D' }}
+      ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '9:16' }}
+      DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || inputs.duration_seconds || '15' }}
+      CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
+      CAPTION_SCALE: ${{ github.event.client_payload.caption_scale || '4' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,8 +77,10 @@ jobs:
 
       - name: Install System & C++ Dependencies
         run: |
+          export DEBIAN_FRONTEND=noninteractive
+          export NEEDRESTART_MODE=l
           sudo apt-get update -y
-          sudo apt-get install -y \
+          sudo NEEDRESTART_MODE=l apt-get install -y \
             build-essential cmake pkg-config \
             libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libavutil-dev \
             libfreetype-dev libharfbuzz-dev nlohmann-json3-dev libomp-dev fonts-dejavu-core ffmpeg
@@ -89,7 +91,7 @@ jobs:
           mkdir -p editor/build
           cd editor/build
           cmake -DCMAKE_BUILD_TYPE=Release ..
-          make -j$(nproc)
+          make -j2
           ./hyper_editor --help || true
 
       - name: Mark processing in Supabase
