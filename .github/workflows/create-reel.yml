@@ -3,7 +3,7 @@ run-name: Reel - ${{ github.event.client_payload.prompt || inputs.prompt || gith
 
 on:
   repository_dispatch:
-    types: [reel, reel_dispatch, short_form, video_agent_render]
+    types: [reel, reel_dispatch, short_form, short, video_agent_render, create_reel, create-reel]
   workflow_dispatch:
     inputs:
       prompt:
