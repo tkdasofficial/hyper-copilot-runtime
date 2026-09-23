@@ -6,7 +6,7 @@ run-name: Video: ${{ github.event.client_payload.title || github.event.client_pa
 # and workflow runs strictly when Supabase dispatches it.
 on:
   repository_dispatch:
-    types: [create-video, create_video, long_form, long, create_reel, create-reel, short_form, short]
+    types: [create-video, create_video, long_form, long, video, video_dispatch, video-agent]
   workflow_dispatch:
     inputs:
       prompt:
