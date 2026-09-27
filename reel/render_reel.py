@@ -113,7 +113,7 @@ def dims(cfg):
 
 
 # ---------------------------------------------------------------- script
-NIM_MODELS = ["nvidia/nemotron-3.5-lightning-30b-a3b", "nvidia/nemotron-3-super-120b-a12b"]
+NIM_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b"]
 
 
 def write_script(cfg) -> dict:
