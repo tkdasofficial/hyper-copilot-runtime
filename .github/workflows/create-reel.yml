@@ -97,22 +97,11 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"status":"processing","step":"Executing Reel Engine (9:16)","progress":10}' || true
 
-      - name: Render Reel (script, stock footage, voice, music, edit, Drive)
+      - name: Render Reel (script, stock footage, voice, music, edit)
         run: python reel/render_reel.py
 
-      - name: Verify Completion in Supabase
-        if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
-        run: |
-          STATUS_VAL=$(curl -sS "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID&select=status" \
-            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" | grep -o '"status":"[^"]*"' | cut -d'"' -f4 || echo "")
-          if [ "$STATUS_VAL" != "completed" ]; then
-            curl -sS -X PATCH "$SUPABASE_URL/rest/v1/videos?id=eq.$VIDEO_ID" \
-              -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
-              -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
-              -H "Content-Type: application/json" \
-              -d '{"status":"completed","progress":100,"step":"Finished"}' || true
-          fi
+      - name: Upload Video to Google Drive (Videos folder)
+        run: python reel/render_reel.py --upload
 
       - name: Mark failed
         if: failure() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
