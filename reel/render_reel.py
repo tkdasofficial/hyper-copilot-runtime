@@ -117,30 +117,37 @@ NIM_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b"]
 
 
 def write_script(cfg) -> dict:
-    words_per_sec = 2.5 if cfg["language"] == "English" else 2.1
+    facts = "news" in str(cfg["category"]).lower() or "fact" in str(cfg["category"]).lower()
+    words_per_sec = 2.55 if cfg["language"] == "English" else 2.3
     total_words = int(cfg["duration"] * words_per_sec)
-    scenes = max(3, min(12, round(cfg["duration"] / 5)))
+    scenes = max(3, min(15, round(cfg["duration"] / 3.5)))
     system = (
-        "You write narration scripts for vertical short videos built from stock footage. "
-        "Reply with JSON only, no markdown."
+        "You write accurate, original short-video narration in a natural conversational voice. "
+        "Respect user and negative prompts above all style guidance. Reply with JSON only, no markdown."
     )
     user = f"""
 Topic / user instructions: {cfg['prompt']}
 Things to avoid (negative prompt): {cfg['negative'] or 'none'}
 Category: {cfg['category']}   Visual style: {cfg['style']}
-Narration language: {cfg['language']} (write narration ONLY in {cfg['language']}, native script).
-Total narration length: about {total_words} words across about {scenes} scenes (video is {cfg['duration']} seconds).
+Narration language: {cfg['language']} (narrate ONLY in {cfg['language']}, native script).
+Target about {total_words} spoken words across about {scenes} short scenes for a {cfg['duration']}-second video.
 
-Decide the format:
-- "list" when the topic asks for Top N / facts / reasons / things (e.g. "Top 5 facts about NASA"). Use exactly N items if N is given; the first scene is a short hook, then one scene per item counting down or up, last scene a quick outro.
-- "explainer" for a single focused topic (e.g. "How SpaceX builds the most powerful rockets"): hook, clear step-by-step explanation, strong ending.
-Facts must be accurate and specific. Follow every user instruction. Never include anything from the negative prompt.
+{'FACT VIDEO STYLE:' if facts else 'VIDEO STYLE:'}
+- Open immediately with a strong, specific curiosity hook. No greeting, intro, filler, or closing request to follow/subscribe.
+- Sound energetic, conversational and original, like a good Indian fact-video presenter. Use short, punchy sentences with minimal pauses, and natural punctuation for vocal emphasis on striking words.
+- Use "Did you know?" / "क्या आपको पता है?" only when it sounds natural; do not force or repeat it.
+- Structure each fact: hook → fact → one short explanation → surprising twist/payoff. Every line must move the story forward.
+- For Top N/list requests, exactly N distinct facts, say "Fact number 1", "Fact number 2", etc. in the requested language (Hindi: "फैक्ट नंबर 1", "फैक्ट नंबर 2" etc). Do not count down unless user asks. A very short first hook is allowed; no separate outro scene.
+- For one focused topic, explain that topic with connected scenes and a strong final payoff, not a numbered list.
+- Make factual claims precise; never invent numbers, quotations, or unsupported superlatives. Follow user instructions and exclusions.
+- Each scene must have a SPECIFIC visual subject matching exactly what is spoken at that moment. Provide 3 concrete English stock-search phrases ordered most relevant first: named subject and visible action/object, not vague scenery. Search stock for real footage; do not request AI artwork.
+- Keep badge and headline optional and brief; headline 1-3 words, not narration repeated. Captions will follow word timing.
 
 Return JSON:
 {{"title": "short title in {cfg['language']}",
   "format": "list" | "explainer",
-  "scenes": [{{"narration": "...", "badge": "#5 or empty", "headline": "2-5 word on-screen label in {cfg['language']} or empty",
-              "keywords": ["3 short ENGLISH stock-footage search phrases, concrete and visual"]}}]}}
+  "scenes": [{{"narration": "...", "badge": "short fact number or empty", "headline": "1-3 word label or empty",
+              "keywords": ["specific English visual stock query", "alternative specific query", "third specific query"]}}]}}
 """
     key = os.environ.get("NVIDIA_API_KEY", "")
     last_err = None
@@ -184,13 +191,13 @@ VOICES = {
 }
 
 
-async def _tts(text, voice, out: Path, rate: str):
+async def _tts(text, voice, out: Path, rate: str, pitch: str):
     import edge_tts
 
-    try:
-        comm = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
-    except TypeError:
-        comm = edge_tts.Communicate(text, voice, rate=rate)
+    # Edge TTS supports rate, pitch, volume and WordBoundary via its own SSML.
+    # It does not support arbitrary nested <emphasis> or <break> tags; punctuation
+    # and short scene boundaries produce natural emphasis without broken SSML.
+    comm = edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume="+0%", boundary="WordBoundary")
     words = []
     with open(out, "wb") as f:
         async for chunk in comm.stream():
@@ -201,14 +208,34 @@ async def _tts(text, voice, out: Path, rate: str):
     return words
 
 
+def trim_voice(out: Path, words: list) -> list:
+    """Trim only outside the spoken words; preserve internal prosody and alignment."""
+    if not words:
+        return words
+    duration = probe_duration(out)
+    start = max(0.0, words[0][0] - 0.055)
+    end = min(duration, words[-1][0] + words[-1][1] + 0.105)
+    if start < 0.045 and duration - end < 0.18:
+        return words
+    trimmed = out.with_name(out.stem + "_trim.mp3")
+    run(["ffmpeg", "-y", "-i", str(out), "-ss", f"{start:.3f}", "-t", f"{max(0.15, end-start):.3f}",
+         "-c:a", "libmp3lame", "-q:a", "2", str(trimmed)])
+    trimmed.replace(out)
+    return [(max(0.0, ws-start), wd, text) for ws, wd, text in words]
+
+
 def tts(text, cfg, out: Path, rate: str):
     male, female = VOICES.get(str(cfg["language"]).lower(), VOICES["english"])
     voice = female if cfg["gender"].startswith("f") else male
+    # Modest pitch lift on emphatic lines; never distort the speaker's identity.
+    pitch = "+3Hz" if re.search(r"[!?！？]|\b(?:shocking|incredible)\b", text, re.I) else "+0Hz"
     for attempt in range(3):
         try:
-            words = asyncio.run(_tts(text, voice, out, rate))
+            words = asyncio.run(_tts(text, voice, out, rate, pitch))
             if out.exists() and out.stat().st_size > 1000:
-                if not words:  # spread words evenly when no boundaries came back
+                if words:
+                    words = trim_voice(out, words)
+                else:
                     d = probe_duration(out)
                     toks = text.split()
                     step = d / max(1, len(toks))
@@ -283,14 +310,15 @@ def fetch_asset(keywords, cfg, idx) -> dict:
     photos = str(cfg["visual_type"]).lower().startswith("stock photo")
     neg = _neg_terms(cfg)
     sources = str(cfg["sources"]).lower()
-    for q in keywords + [cfg["category"], "cinematic background"]:
+    for q in [str(k).strip() for k in keywords if str(k).strip()] + [cfg["prompt"][:80]]:
         cands = []
         if "pexels" in sources:
             cands += search_pexels(q, cfg, photos)
         if "pixabay" in sources:
             cands += search_pixabay(q, cfg, photos)
         cands = [c for c in cands if c["id"] not in USED and not any(n in c["label"] for n in neg)]
-        random.shuffle(cands)
+        terms = [w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) > 2]
+        cands.sort(key=lambda c: sum(w in c["label"] for w in terms), reverse=True)
         for c in cands[:4]:
             ext = "jpg" if c["kind"] == "image" else "mp4"
             dest = WORK / f"asset_{idx}.{ext}"
@@ -305,7 +333,7 @@ def fetch_asset(keywords, cfg, idx) -> dict:
                     return {"path": dest, "kind": c["kind"]}
             except Exception as e:
                 print("[reel] download failed:", e)
-    raise RuntimeError(f"No stock media found for scene {idx + 1}")
+    raise RuntimeError(f"No relevant stock media found for scene {idx + 1}; try a more visually searchable topic")
 
 
 # ---------------------------------------------------------------- music (Drive)
@@ -393,9 +421,9 @@ def scene_filter(t: dict, i: int, dur: float, W: int, H: int, fps: int, kind: st
             f"eq=contrast={grade.get('contrast', 1.05)}:saturation={grade.get('saturation', 1.1)}:brightness={grade.get('brightness', 0)}"
         )
     mask = t.get("mask", {})
-    if mask.get("vignette"):
+    if mask.get("vignette") and not t.get("fact_style"):
         parts.append(f"vignette=angle={mask.get('angle', 0.6)}")
-    if mask.get("letterbox"):
+    if mask.get("letterbox") and not t.get("fact_style"):
         bar = int(H * float(mask.get("letterbox", 0.06)))
         parts.append(f"drawbox=x=0:y=0:w=iw:h={bar}:color=black@1:t=fill,drawbox=x=0:y=ih-{bar}:w=iw:h={bar}:color=black@1:t=fill")
     fade = float(t.get("transitions", {}).get("fade", 0.25))
@@ -466,21 +494,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             continue
         words = sc["words"]
         per = int(t.get("captions", {}).get("words_per_line", 3))
+        # One short, bold phrase at a time; never stack full narration paragraphs.
+        per = min(3, max(1, per))
         for gi in range(0, len(words), per):
             group = words[gi:gi + per]
-            for wi, (ws, wd, wt) in enumerate(group):
-                start = s0 + ws
-                nxt = group[wi + 1][0] if wi + 1 < len(group) else (words[gi + per][0] if gi + per < len(words) else ws + wd + 0.3)
-                end = s0 + max(nxt, ws + 0.12)
-                parts = []
-                for wj, (_, _, tok) in enumerate(group):
-                    tok = ass_escape(tok.upper() if (latin and style == "bold") else tok)
-                    if wj == wi and style != "minimal":
-                        pop = "\\t(0,90,\\fscx112\\fscy112)\\t(90,180,\\fscx100\\fscy100)" if style == "dynamic" else ""
-                        parts.append(f"{{\\c{hl}{pop}}}{tok}{{\\c&H00FFFFFF&\\fscx100\\fscy100}}")
-                    else:
-                        parts.append(tok)
-                lines.append(f"Dialogue: 1,{ass_time(start)},{ass_time(min(end, s1))},Cap,,0,0,0,,{' '.join(parts)}")
+            if not group:
+                continue
+            start = s0 + group[0][0]
+            last = group[-1]
+            end = min(s1, s0 + last[0] + last[1] + 0.11)
+            if end <= start:
+                continue
+            phrase = " ".join(ass_escape(tok.upper() if latin and style == "bold" else tok) for _, _, tok in group)
+            lines.append(f"Dialogue: 1,{ass_time(start)},{ass_time(end)},Cap,,0,0,0,,{phrase}")
     path = WORK / "overlay.ass"
     path.write_text(head + "\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -517,6 +543,13 @@ def main():
     W, H = dims(cfg)
     fps = cfg["fps"]
     t = load_template(cfg["template"])
+    if "news" in str(cfg["category"]).lower() or "fact" in str(cfg["category"]).lower():
+        t = {**t, "fact_style": True, "voice_rate": "+13%", "scene_gap": 0.07,
+             "music_volume": 0.10, "speed": {"factor": 1.0},
+             "zoom": {"pattern": ["in", "out", "pan_right"], "amount": 0.07},
+             "transitions": {"fade": 0.08}, "overlay": {"badge": True, "headline": False},
+             "captions": {"words_per_line": 2}}
+
     print(json.dumps({k: v for k, v in cfg.items() if k not in ("user_id",)}, ensure_ascii=False, indent=1))
     try:
         update_row(vid, status="processing", step="Writing the script", progress=8)
@@ -542,8 +575,14 @@ def main():
         clips = []
         for i, sc in enumerate(timeline):
             update_row(vid, step=f"Stock footage & editing {i + 1}/{len(timeline)}", progress=40 + int(35 * i / len(timeline)))
-            asset = fetch_asset([str(k) for k in sc["keywords"]][:3], cfg, i)
-            clips.append(render_scene(asset, t, i, sc["dur"], W, H, fps))
+            # Cut within longer narration scenes, keeping footage tied to this fact.
+            segments = max(1, math.ceil(sc["dur"] / 3.4)) if t.get("fact_style") else 1
+            clip_len = sc["dur"] / segments
+            queries = [str(k) for k in sc["keywords"] if str(k).strip()][:3]
+            for j in range(segments):
+                ordered = queries[j % len(queries):] + queries[:j % len(queries)] if queries else [cfg["prompt"]]
+                asset = fetch_asset(ordered, cfg, len(clips))
+                clips.append(render_scene(asset, t, len(clips), clip_len, W, H, fps))
 
         update_row(vid, step="Mixing voice and music", progress=78)
         concat = WORK / "concat.txt"
