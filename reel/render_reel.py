@@ -42,6 +42,7 @@ def load_payload() -> dict:
         "aspect": g("visual.aspect_ratio", "aspect_ratio", default="9:16"),
         "resolution": g("visual.resolution", default="1080p"),
         "fps": int(re.sub(r"\D", "", str(g("visual.fps", default="30"))) or 30),
+        "bitrate_mbps": max(1, min(16, int(float(re.sub(r"[^0-9.]", "", str(g("visual.bitrate_mbps", default="16"))) or 16)))),
         "language": g("audio.language", default="English"),
         "gender": str(g("audio.voice_gender", "voice_gender", default="male")).lower(),
         "music_on": str(g("music.enabled", default="true")).lower() in ("true", "1", "yes"),
@@ -785,8 +786,8 @@ def main():
         ass = build_ass(cfg, t, timeline, W, H)
         final = WORK / "final.mp4"
         run(["ffmpeg", "-y", "-i", str(video), "-i", str(mixed), "-vf", f"ass={ass}",
-             "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "17",
-             "-profile:v", "high", "-level", "4.2", "-pix_fmt", "yuv420p", "-r", str(fps), "-b:v", "0", "-maxrate", "14M", "-bufsize", "20M", "-c:a", "aac", "-b:a", "192k", "-shortest",
+             "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "medium",
+             "-profile:v", "high", "-level", "4.2", "-pix_fmt", "yuv420p", "-r", str(fps), "-b:v", f"{cfg['bitrate_mbps']}M", "-minrate", f"{cfg['bitrate_mbps']}M", "-maxrate", f"{cfg['bitrate_mbps']}M", "-bufsize", f"{cfg['bitrate_mbps']*2}M", "-x264-params", "nal-hrd=cbr", "-c:a", "aac", "-b:a", "192k", "-shortest",
              "-movflags", "+faststart", str(final)])
 
         (WORK / "result.json").write_text(json.dumps({"path": str(final), "title": title}), encoding="utf-8")
