@@ -321,7 +321,7 @@ def fetch_asset(keywords, cfg, idx) -> dict:
     photos = str(cfg["visual_type"]).lower().startswith("stock photo")
     neg = _neg_terms(cfg)
     sources = str(cfg["sources"]).lower()
-    for q in [str(k).strip() for k in keywords if str(k).strip()] + [cfg["prompt"][:80]]:
+    for q in [str(k).strip() for k in keywords if str(k).strip()]:
         cands = []
         for use_photos in ([True] if photos else [False, True]):
             if "pexels" in sources:
