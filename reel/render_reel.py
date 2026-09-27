@@ -581,11 +581,9 @@ def main():
              "-pix_fmt", "yuv420p", "-r", str(fps), "-c:a", "aac", "-b:a", "192k", "-shortest",
              "-movflags", "+faststart", str(final)])
 
-        update_row(vid, step="Saving to Google Drive", progress=94)
-        file_id = upload_to_drive(final, title)
-        update_row(vid, status="completed", step="Finished", progress=100, file_id=file_id,
-                   video_url=f"drive:{file_id}", error=None, title=title)
-        print("[reel] done:", file_id)
+        (WORK / "result.json").write_text(json.dumps({"path": str(final), "title": title}), encoding="utf-8")
+        update_row(vid, step="Rendered, uploading to Google Drive", progress=92, title=title)
+        print("[reel] rendered:", final, round(final.stat().st_size / 1e6, 2), "MB")
     except Exception as e:
         msg = str(e)[:500]
         print("[reel] FAILED:", msg, file=sys.stderr)
@@ -593,5 +591,25 @@ def main():
         sys.exit(1)
 
 
+def upload_main():
+    cfg = load_payload()
+    vid = cfg["video_id"]
+    try:
+        info = json.loads((WORK / "result.json").read_text(encoding="utf-8"))
+        final = Path(info["path"])
+        if not final.exists() or final.stat().st_size < 10000:
+            raise RuntimeError("rendered video is missing")
+        update_row(vid, step="Saving to Google Drive", progress=95)
+        file_id = upload_to_drive(final, info["title"])
+        update_row(vid, status="completed", step="Finished", progress=100, file_id=file_id,
+                   video_url=f"drive:{file_id}", error=None, title=info["title"])
+        print("[reel] uploaded to Google Drive Videos folder:", file_id)
+    except Exception as e:
+        msg = f"Google Drive upload failed: {str(e)[:450]}"
+        print("[reel] FAILED:", msg, file=sys.stderr)
+        update_row(vid, status="failed", step="failed", error=msg)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    upload_main() if "--upload" in sys.argv else main()
