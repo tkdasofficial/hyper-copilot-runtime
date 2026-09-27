@@ -56,7 +56,16 @@ def load_payload() -> dict:
     }
     cfg["duration"] = max(10, min(90, cfg["duration"]))
     cfg["fps"] = 60 if cfg["fps"] >= 60 else 30
+    if _is_fact(cfg) and cfg["aspect"] == "9:16":
+        cfg["duration"] = max(30, min(50, cfg["duration"] if cfg["duration"] >= 30 else 42))
+        cfg["fps"] = 60
+        cfg["resolution"] = "1080p"
     return cfg
+
+
+def _is_fact(cfg) -> bool:
+    c = str(cfg.get("category", "")).lower()
+    return "news" in c or "fact" in c
 
 
 def _dig(obj, dotted):
@@ -116,9 +125,24 @@ def dims(cfg):
 NIM_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b"]
 
 
+LANG_RULES = {
+    "english": "LANGUAGE: Pure, natural spoken English only. No Hindi words at all. Fact label: \"Fact number 1\".",
+    "hindi": "LANGUAGE: Pure, natural spoken Hindi only, in Devanagari script. Do not mix English words; use natural Hindi equivalents (numbers in Hindi words or digits). Fact label: \"फैक्ट नंबर 1\" is not allowed; use \"तथ्य नंबर 1\" or \"नंबर 1\". Hook phrase: \"क्या आपको पता है?\".",
+    "hinglish": ("LANGUAGE: Hinglish — the natural conversational Hindi + English mix Indian creators actually speak. "
+                 "Write Hindi words in Devanagari and English words in Latin script, e.g. "
+                 "\"क्या आपको पता है कि human body में एक ऐसा organ है जो खुद को regenerate कर सकता है?\". "
+                 "Keep common modern/technical words in English (organ, planet, rocket, engine, brain, speed, record, scientists, data) "
+                 "where that is how people naturally say them; keep grammar, connectors and emotion in Hindi. "
+                 "Do not force English into every sentence and never translate common technical terms into awkward formal Hindi. "
+                 "It must read fluent, not machine-translated. Fact label: \"Fact number 1\". Hook: \"क्या आपको पता है?\" or \"Did you know?\"."),
+    "bengali": "LANGUAGE: Natural spoken Bengali only, in Bengali script.",
+}
+
+
 def write_script(cfg) -> dict:
     facts = "news" in str(cfg["category"]).lower() or "fact" in str(cfg["category"]).lower()
-    words_per_sec = 2.55 if cfg["language"] == "English" else 2.3
+    lang = str(cfg["language"]).strip().lower()
+    words_per_sec = 2.9 if lang == "english" else 2.7
     total_words = int(cfg["duration"] * words_per_sec)
     scenes = max(3, min(15, round(cfg["duration"] / 3.5)))
     system = (
@@ -129,7 +153,7 @@ def write_script(cfg) -> dict:
 Topic / user instructions: {cfg['prompt']}
 Things to avoid (negative prompt): {cfg['negative'] or 'none'}
 Category: {cfg['category']}   Visual style: {cfg['style']}
-Narration language: {cfg['language']} (narrate ONLY in {cfg['language']}, native script).
+{LANG_RULES.get(lang, LANG_RULES['english'])}
 Target about {total_words} spoken words across about {scenes} short scenes for a {cfg['duration']}-second video.
 
 {'FACT VIDEO STYLE:' if facts else 'VIDEO STYLE:'}
@@ -137,9 +161,11 @@ Target about {total_words} spoken words across about {scenes} short scenes for a
 - Sound energetic, conversational and original, like a good Indian fact-video presenter. Use short, punchy sentences with minimal pauses, and natural punctuation for vocal emphasis on striking words.
 - Use "Did you know?" / "क्या आपको पता है?" only when it sounds natural; do not force or repeat it.
 - Structure each fact: hook → fact → one short explanation → surprising twist/payoff. Every line must move the story forward.
-- For Top N/list requests, exactly N distinct facts, say "Fact number 1", "Fact number 2", etc. in the requested language (Hindi: "फैक्ट नंबर 1", "फैक्ट नंबर 2" etc). Do not count down unless user asks. A very short first hook is allowed; no separate outro scene.
+- Sound like a real short-form creator talking to a friend, never like an AI article. Information-dense: every sentence adds a new detail. End with a memorable payoff line.
+- For Top N/list requests, exactly N distinct facts, each introduced with the fact label defined in LANGUAGE. Do not count down unless user asks. A very short first hook is allowed; no separate outro scene.
 - For one focused topic, explain that topic with connected scenes and a strong final payoff, not a numbered list.
 - Make factual claims precise; never invent numbers, quotations, or unsupported superlatives. Follow user instructions and exclusions.
+- Keep each scene 1-2 short sentences (about 3-6 seconds spoken) so visuals can follow the narration closely.
 - Each scene must have a SPECIFIC visual subject matching exactly what is spoken at that moment. Provide 3 concrete English stock-search phrases ordered most relevant first: named subject and visible action/object, not vague scenery. Search stock for real footage; do not request AI artwork.
 - Keep badge and headline optional and brief; headline 1-3 words, not narration repeated. Captions will follow word timing.
 
@@ -147,7 +173,8 @@ Return JSON:
 {{"title": "short title in {cfg['language']}",
   "format": "list" | "explainer",
   "scenes": [{{"narration": "...", "badge": "short fact number or empty", "headline": "1-3 word label or empty",
-              "keywords": ["specific English visual stock query", "alternative specific query", "third specific query"]}}]}}
+              "keywords": ["specific English visual stock query (2-4 words)", "alternative specific query", "broader but still on-topic query"],
+              "emphasis": ["1-3 key words/numbers from the narration to highlight"]}}]}}
 """
     key = os.environ.get("NVIDIA_API_KEY", "")
     last_err = None
@@ -187,6 +214,7 @@ Return JSON:
 VOICES = {
     "english": ("en-US-AndrewNeural", "en-US-AvaNeural"),
     "hindi": ("hi-IN-MadhurNeural", "hi-IN-SwaraNeural"),
+    "hinglish": ("hi-IN-MadhurNeural", "hi-IN-SwaraNeural"),
     "bengali": ("bn-IN-BashkarNeural", "bn-IN-TanishaaNeural"),
 }
 
@@ -224,27 +252,61 @@ def trim_voice(out: Path, words: list) -> list:
     return [(max(0.0, ws-start), wd, text) for ws, wd, text in words]
 
 
-def tts(text, cfg, out: Path, rate: str):
-    male, female = VOICES.get(str(cfg["language"]).lower(), VOICES["english"])
-    voice = female if cfg["gender"].startswith("f") else male
-    # Modest pitch lift on emphatic lines; never distort the speaker's identity.
-    pitch = "+3Hz" if re.search(r"[!?！？]|\b(?:shocking|incredible)\b", text, re.I) else "+0Hz"
+def _sentences(text):
+    parts = re.split(r"(?<=[.!?।？！])\s+", text.strip())
+    return [x for x in (p.strip() for p in parts) if x]
+
+
+def _pct(rate: str) -> int:
+    m = re.search(r"-?\d+", rate or "0")
+    return int(m.group(0)) if m else 0
+
+
+def _one(text, voice, out: Path, rate: str, pitch: str):
     for attempt in range(3):
         try:
             words = asyncio.run(_tts(text, voice, out, rate, pitch))
             if out.exists() and out.stat().st_size > 1000:
                 if words:
-                    words = trim_voice(out, words)
-                else:
-                    d = probe_duration(out)
-                    toks = text.split()
-                    step = d / max(1, len(toks))
-                    words = [(i * step, step, t) for i, t in enumerate(toks)]
-                return words
+                    return trim_voice(out, words)
+                d = probe_duration(out)
+                toks = text.split()
+                step = d / max(1, len(toks))
+                return [(i * step, step, t) for i, t in enumerate(toks)]
         except Exception as e:
             print("[reel] tts retry:", e)
             time.sleep(2)
     raise RuntimeError("Voice generation failed")
+
+
+def tts(text, cfg, out: Path, rate: str):
+    """Sentence-level pacing: each sentence gets its own rate/pitch, then joined tight."""
+    male, female = VOICES.get(str(cfg["language"]).lower(), VOICES["english"])
+    voice = female if cfg["gender"].startswith("f") else male
+    base = _pct(rate)
+    sents = _sentences(text) or [text]
+    parts, words, cursor = [], [], 0.0
+    for k, sent in enumerate(sents):
+        hook = k == 0 and re.search(r"[?？]", sent)
+        emphatic = re.search(r"[!！]|\d|shocking|incredible|सच|हैरान|सबसे|record|biggest|fastest", sent, re.I)
+        r = base + (4 if emphatic else 0) - (3 if len(sent.split()) > 16 else 0)
+        pitch = "+6Hz" if hook else ("+5Hz" if emphatic else "+2Hz")
+        seg = out.with_name(f"{out.stem}_s{k}.mp3")
+        w = _one(sent, voice, seg, f"{r:+d}%", pitch)
+        d = probe_duration(seg)
+        words += [(ws + cursor, wd, tt) for ws, wd, tt in w]
+        parts.append(seg)
+        cursor += d + 0.04
+    if len(parts) == 1:
+        parts[0].replace(out)
+        return words
+    inputs, filt = [], []
+    for i, pth in enumerate(parts):
+        inputs += ["-i", str(pth)]
+        filt.append(f"[{i}:a]aresample=24000,apad=pad_dur=0.04[p{i}]")
+    filt.append("".join(f"[p{i}]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=0:a=1[o]")
+    run(["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filt), "-map", "[o]", "-c:a", "libmp3lame", "-q:a", "2", str(out)])
+    return words
 
 
 # ---------------------------------------------------------------- footage
@@ -272,12 +334,15 @@ def search_pexels(q, cfg, photos=False):
         if photos:
             out.append({"id": f"px{it['id']}", "url": it["src"]["large2x"], "label": label, "kind": "image"})
             continue
-        files = [f for f in it.get("video_files", []) if f.get("file_type") == "video/mp4" and f.get("height")]
+        files = [f for f in it.get("video_files", []) if f.get("file_type") == "video/mp4" and f.get("height") and f.get("width")]
+        files = [f for f in files if min(f["width"], f["height"]) >= 720]
         if not files:
             continue
-        target = 1920 if cfg["aspect"] == "9:16" else 1080
-        files.sort(key=lambda f: abs((f["height"] if cfg["aspect"] == "9:16" else f["height"]) - target))
-        out.append({"id": f"pv{it['id']}", "url": files[0]["link"], "label": label, "kind": "video", "dur": it.get("duration", 0)})
+        # 1080p target: closest short side to 1080, never 4K when 1080 exists.
+        files.sort(key=lambda f: abs(min(f["width"], f["height"]) - 1080))
+        f0 = files[0]
+        out.append({"id": f"pv{it['id']}", "url": f0["link"], "label": label, "kind": "video", "dur": it.get("duration", 0),
+                    "src": "pexels", "short": min(f0["width"], f0["height"]), "portrait": f0["height"] > f0["width"]})
     return out
 
 
@@ -286,7 +351,7 @@ def search_pixabay(q, cfg, photos=False):
     if not key:
         return []
     url = "https://pixabay.com/api/" if photos else "https://pixabay.com/api/videos/"
-    params = {"key": key, "q": q[:100], "per_page": 12, "safesearch": "true"}
+    params = {"key": key, "q": q[:100], "per_page": 15, "safesearch": "true", "order": "popular"}
     if photos:
         params["orientation"] = "vertical" if cfg["aspect"] == "9:16" else "horizontal"
     try:
@@ -300,54 +365,128 @@ def search_pixabay(q, cfg, photos=False):
             out.append({"id": f"xi{it['id']}", "url": it.get("largeImageURL"), "label": label, "kind": "image"})
             continue
         v = it.get("videos", {})
-        pick = v.get("large") if v.get("large", {}).get("url") else v.get("medium")
-        if pick and pick.get("url"):
-            out.append({"id": f"xv{it['id']}", "url": pick["url"], "label": label, "kind": "video", "dur": it.get("duration", 0)})
+        opts = [v.get(k) for k in ("large", "medium") if (v.get(k) or {}).get("url") and (v.get(k) or {}).get("width")]
+        opts = [o for o in opts if min(o["width"], o["height"]) >= 720]
+        if opts:
+            pick = opts[0]
+            out.append({"id": f"xv{it['id']}", "url": pick["url"], "label": label, "kind": "video", "dur": it.get("duration", 0),
+                        "src": "pixabay", "short": min(pick["width"], pick["height"]), "portrait": pick["height"] > pick["width"]})
     return out
 
 
 def unusable_asset(path: Path, kind: str) -> bool:
-    # Reject black footage/images; a caption over blank black is not a visual.
+    """Reject black/blank and blurry footage (edge-energy probe on a mid frame)."""
     try:
         probe = ["-ss", "1", "-i", str(path)] if kind == "video" else ["-i", str(path)]
-        result = subprocess.run(["ffmpeg", "-v", "error", *probe, "-frames:v", "1", "-vf", "scale=32:32,format=gray", "-f", "rawvideo", "-"], capture_output=True, timeout=20)
-        pixels = result.stdout
-        return not pixels or (len(pixels) >= 1024 and sum(pixels[:1024]) / 1024 < 12)
+        base = ["ffmpeg", "-v", "error", *probe, "-frames:v", "1"]
+        gray = subprocess.run([*base, "-vf", "scale=32:32,format=gray", "-f", "rawvideo", "-"], capture_output=True, timeout=20).stdout
+        if not gray or (len(gray) >= 1024 and sum(gray[:1024]) / 1024 < 14):
+            print("[stock] reject: blank/dark frame")
+            return True
+        edges = subprocess.run([*base, "-vf", "scale=270:480,format=gray,edgedetect=low=0.08:high=0.2", "-f", "rawvideo", "-"], capture_output=True, timeout=20).stdout
+        if edges:
+            density = sum(1 for b in edges if b > 128) / len(edges)
+            if density < 0.012:
+                print(f"[stock] reject: blurry/flat (edge density {density:.4f})")
+                return True
+        return False
     except Exception:
         return True
 
 
+STOP = {"real", "footage", "video", "stock", "planet", "space", "with", "from", "that", "this", "into", "over",
+        "close", "view", "shot", "clip", "background", "beautiful", "the", "and"}
+
+
+def _terms(q):
+    return [w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) > 2 and w not in STOP]
+
+
+def _relevance(c, terms):
+    if not terms:
+        return 0.0
+    hits = sum(1 for w in terms if w in c["label"] or (len(w) > 4 and w[:-1] in c["label"]))
+    return hits / len(terms)
+
+
+def _score(c, terms, cfg):
+    rel = _relevance(c, terms)
+    quality = 1.0 if c.get("short", 0) >= 1080 else 0.6
+    comp = 1.0 if (c.get("portrait") == (cfg["aspect"] == "9:16")) else 0.8
+    return (round(rel, 2), quality, comp, c["kind"] == "video")
+
+
+def _download(c, dest):
+    with requests.get(c["url"], stream=True, timeout=120) as r:
+        r.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(1 << 20):
+                f.write(chunk)
+
+
+def _try_provider(name, q, cfg, idx, photos, neg):
+    search = search_pixabay if name == "pixabay" else search_pexels
+    terms = _terms(q)
+    need = 0.5 if len(terms) >= 2 else 1.0
+    cands = []
+    for use_photos in ([True] if photos else [False]):
+        cands += search(q, cfg, use_photos)
+    cands = [c for c in cands if c["id"] not in USED and not any(n in c["label"] for n in neg)]
+    good = [c for c in cands if _relevance(c, terms) >= need]
+    if not good:
+        print(f"[stock] {name}: no relevant result for '{q}' ({len(cands)} candidates rejected as off-topic)")
+        return None
+    good.sort(key=lambda c: _score(c, terms, cfg), reverse=True)
+    for c in good[:4]:
+        ext = "jpg" if c["kind"] == "image" else "mp4"
+        dest = WORK / f"asset_{idx}.{ext}"
+        try:
+            _download(c, dest)
+            if dest.stat().st_size > 20_000 and not unusable_asset(dest, c["kind"]):
+                USED.add(c["id"])
+                print(f"[stock] accept {name} {c['id']} rel={_relevance(c, terms):.2f} {c.get('short', '?')}p for '{q}'")
+                return {"path": dest, "kind": c["kind"], "src": name}
+            print(f"[stock] {name}: rejected {c['id']} on quality")
+        except Exception as e:
+            print("[reel] download failed:", e)
+    return None
+
+
+def _refine(q):
+    t = _terms(q)
+    out = []
+    if len(t) > 2:
+        out.append(" ".join(t[:2]))
+    if len(t) > 1:
+        out.append(t[-1] if len(t[-1]) > len(t[0]) else t[0])
+    return out
+
+
 def fetch_asset(keywords, cfg, idx) -> dict:
+    """Script -> query -> Pixabay -> relevance/quality check -> Pexels fallback -> refine query."""
     photos = str(cfg["visual_type"]).lower().startswith("stock photo")
     neg = _neg_terms(cfg)
     sources = str(cfg["sources"]).lower()
-    for q in [str(k).strip() for k in keywords if str(k).strip()]:
-        cands = []
-        for use_photos in ([True] if photos else [False, True]):
-            if "pexels" in sources:
-                cands += search_pexels(q, cfg, use_photos)
-            if "pixabay" in sources:
-                cands += search_pixabay(q, cfg, use_photos)
-        cands = [c for c in cands if c["id"] not in USED and not any(n in c["label"] for n in neg)]
-        terms = [w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) > 3 and w not in ("real", "footage", "video", "stock", "planet", "space")]
-        if terms:
-            cands = [c for c in cands if any(w in c["label"] for w in terms)]
-        cands.sort(key=lambda c: (sum(w in c["label"] for w in terms), c["kind"] == "video"), reverse=True)
-        for c in cands[:4]:
-            ext = "jpg" if c["kind"] == "image" else "mp4"
-            dest = WORK / f"asset_{idx}.{ext}"
-            try:
-                with requests.get(c["url"], stream=True, timeout=120) as r:
-                    r.raise_for_status()
-                    with open(dest, "wb") as f:
-                        for chunk in r.iter_content(1 << 20):
-                            f.write(chunk)
-                if dest.stat().st_size > 20_000 and not unusable_asset(dest, c["kind"]):
-                    USED.add(c["id"])
-                    return {"path": dest, "kind": c["kind"]}
-            except Exception as e:
-                print("[reel] download failed:", e)
-    raise RuntimeError(f"No relevant stock media found for scene {idx + 1}; try a more visually searchable topic")
+    order = [p for p in ("pixabay", "pexels") if p in sources] or ["pixabay", "pexels"]
+    queries = [str(k).strip() for k in keywords if str(k).strip()]
+    tried = []
+    for q in queries + [r for q in queries[:2] for r in _refine(q)]:
+        if q in tried:
+            continue
+        tried.append(q)
+        for prov in order:
+            got = _try_provider(prov, q, cfg, idx, photos, neg)
+            if got:
+                return got
+            if prov == "pixabay" and "pexels" in order:
+                print(f"[stock] pixabay rejected for '{q}' -> trying pexels")
+    if not photos:
+        for q in queries[:2]:
+            for prov in order:
+                got = _try_provider(prov, q, cfg, idx, True, neg)
+                if got:
+                    return got
+    return None
 
 
 # ---------------------------------------------------------------- music (Drive)
@@ -455,7 +594,7 @@ def render_scene(asset, t, i, dur, W, H, fps) -> Path:
     else:
         inp = ["-stream_loop", "-1", "-i", str(asset["path"])]
     run(["ffmpeg", "-y", *inp, "-t", f"{dur:.3f}", "-vf", vf, "-an", "-r", str(fps),
-         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", str(out)])
+         "-c:v", "libx264", "-preset", "fast", "-crf", "17", "-pix_fmt", "yuv420p", str(out)])
     return out
 
 
@@ -519,8 +658,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             end = min(s1, s0 + last[0] + last[1] + 0.11)
             if end <= start:
                 continue
-            phrase = " ".join(ass_escape(tok.upper() if latin and style == "bold" else tok) for _, _, tok in group)
-            lines.append(f"Dialogue: 1,{ass_time(start)},{ass_time(end)},Cap,,0,0,0,,{phrase}")
+            emph = [e.lower() for e in sc.get("emphasis", [])]
+            toks = []
+            for _, _, tok in group:
+                txt = ass_escape(tok.upper() if latin and style != "minimal" else tok)
+                key = re.sub(r"[^\w]", "", tok.lower())
+                if key and (any(key in e or e in key for e in emph if e) or re.search(r"\d", tok)):
+                    txt = f"{{\\c&H0000E5FF&\\fscx110\\fscy110}}{txt}{{\\r}}"
+                toks.append(txt)
+            phrase = " ".join(toks)
+            lines.append(f"Dialogue: 1,{ass_time(start)},{ass_time(end)},Cap,,0,0,0,,{{\\fad(60,40)}}{phrase}")
     path = WORK / "overlay.ass"
     path.write_text(head + "\n".join(lines) + "\n", encoding="utf-8")
     return path
@@ -558,8 +705,8 @@ def main():
     fps = cfg["fps"]
     t = load_template(cfg["template"])
     if "news" in str(cfg["category"]).lower() or "fact" in str(cfg["category"]).lower():
-        t = {**t, "fact_style": True, "voice_rate": "+13%", "scene_gap": 0.07,
-             "music_volume": 0.10, "speed": {"factor": 1.0},
+        t = {**t, "fact_style": True, "voice_rate": "+22%", "scene_gap": 0.05,
+             "music_volume": 0.09, "speed": {"factor": 1.0},
              "zoom": {"pattern": ["in", "out", "pan_right"], "amount": 0.07},
              "transitions": {"fade": 0.08}, "overlay": {"badge": True, "headline": False},
              "captions": {"words_per_line": 2}}
@@ -583,6 +730,7 @@ def main():
             audio_parts.append((a, d))
             timeline.append({"start": cursor, "end": cursor + d, "dur": d, "words": words,
                              "badge": sc.get("badge", ""), "headline": sc.get("headline", ""),
+                             "emphasis": [str(e) for e in (sc.get("emphasis") or [])][:3],
                              "keywords": sc.get("keywords") or [cfg["prompt"]]})
             cursor += d
 
@@ -590,12 +738,19 @@ def main():
         for i, sc in enumerate(timeline):
             update_row(vid, step=f"Stock footage & editing {i + 1}/{len(timeline)}", progress=40 + int(35 * i / len(timeline)))
             # Cut within longer narration scenes, keeping footage tied to this fact.
-            segments = max(1, math.ceil(sc["dur"] / 3.4)) if t.get("fact_style") else 1
+            segments = max(1, math.ceil(sc["dur"] / 3.0)) if t.get("fact_style") else 1
             clip_len = sc["dur"] / segments
             queries = [str(k) for k in sc["keywords"] if str(k).strip()][:3]
             for j in range(segments):
                 ordered = queries[j % len(queries):] + queries[:j % len(queries)] if queries else [cfg["prompt"]]
                 asset = fetch_asset(ordered, cfg, len(clips))
+                if not asset:
+                    if j > 0:
+                        # Hold the previous on-topic clip longer instead of inserting filler.
+                        clips.append(render_scene(last_asset, t, len(clips), clip_len, W, H, fps))
+                        continue
+                    raise RuntimeError(f"No relevant stock media found for scene {i + 1}; try a more visually searchable topic")
+                last_asset = asset
                 clips.append(render_scene(asset, t, len(clips), clip_len, W, H, fps))
 
         update_row(vid, step="Mixing voice and music", progress=78)
@@ -619,7 +774,7 @@ def main():
         if music:
             vol = float(t.get("music_volume", 0.18))
             run(["ffmpeg", "-y", "-i", str(narr), "-stream_loop", "-1", "-i", str(music), "-filter_complex",
-                 f"[1:a]aresample=44100,volume={vol},atrim=0:{total:.3f},afade=t=out:st={max(0, total - 1.5):.3f}:d=1.5[m];"
+                 f"[1:a]aresample=44100,volume={vol},atrim=0:{total:.3f},afade=t=in:st=0:d=1.2,afade=t=out:st={max(0, total - 1.8):.3f}:d=1.8[m];"
                  f"[m][0:a]sidechaincompress=threshold=0.05:ratio=6:attack=20:release=300[duck];"
                  f"[0:a][duck]amix=inputs=2:duration=first:normalize=0[out]",
                  "-map", "[out]", "-c:a", "aac", "-b:a", "192k", str(mixed)])
@@ -630,8 +785,8 @@ def main():
         ass = build_ass(cfg, t, timeline, W, H)
         final = WORK / "final.mp4"
         run(["ffmpeg", "-y", "-i", str(video), "-i", str(mixed), "-vf", f"ass={ass}",
-             "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-             "-pix_fmt", "yuv420p", "-r", str(fps), "-c:a", "aac", "-b:a", "192k", "-shortest",
+             "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "17",
+             "-profile:v", "high", "-level", "4.2", "-pix_fmt", "yuv420p", "-r", str(fps), "-b:v", "0", "-maxrate", "14M", "-bufsize", "20M", "-c:a", "aac", "-b:a", "192k", "-shortest",
              "-movflags", "+faststart", str(final)])
 
         (WORK / "result.json").write_text(json.dumps({"path": str(final), "title": title}), encoding="utf-8")
