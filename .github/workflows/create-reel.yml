@@ -1,5 +1,5 @@
 name: Reel
-run-name: Reel - ${{ github.event.client_payload.prompt || inputs.prompt || github.event.client_payload.video_id || 'Render' }}
+run-name: Reel - ${{ github.event.client_payload.content.prompt || github.event.client_payload.prompt || inputs.prompt || 'Render' }}
 
 on:
   repository_dispatch:
@@ -57,9 +57,14 @@ jobs:
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
       GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
-      VIDEO_ID: ${{ github.event.client_payload.video_id || github.run_id }}
-      USER_ID: ${{ github.event.client_payload.user_id || 'github_actions' }}
-      PROMPT: ${{ github.event.client_payload.prompt || inputs.prompt }}
+      GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+      GDRIVE_OAUTH_CLIENT_ID: ${{ secrets.GDRIVE_OAUTH_CLIENT_ID }}
+      GDRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.GDRIVE_OAUTH_CLIENT_SECRET }}
+      GDRIVE_ROOT_FOLDER_ID: ${{ secrets.GDRIVE_ROOT_FOLDER_ID }}
+      PAYLOAD_JSON: ${{ toJson(github.event.client_payload) }}
+      VIDEO_ID: ${{ github.event.client_payload.identity.video_id || github.event.client_payload.video_id || github.run_id }}
+      USER_ID: ${{ github.event.client_payload.identity.user_id || github.event.client_payload.user_id || 'github_actions' }}
+      PROMPT: ${{ github.event.client_payload.content.prompt || github.event.client_payload.prompt || inputs.prompt }}
       NEGATIVE_PROMPT: ${{ github.event.client_payload.negative_prompt }}
       VOICE_GENDER: ${{ github.event.client_payload.voice_gender || inputs.voice_gender || 'female' }}
       VOICE_PERSONA: ${{ github.event.client_payload.voice_persona || 'Dynamic Storyteller' }}
@@ -75,24 +80,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install System & C++ Dependencies
+      - name: Install dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          export NEEDRESTART_MODE=l
           sudo apt-get update -y
-          sudo NEEDRESTART_MODE=l apt-get install -y \
-            build-essential cmake pkg-config \
-            libavcodec-dev libavformat-dev libavfilter-dev libswscale-dev libswresample-dev libavutil-dev \
-            libfreetype-dev libharfbuzz-dev nlohmann-json3-dev libomp-dev fonts-dejavu-core ffmpeg
-          pip install requests edge-tts cryptography
-
-      - name: Compile C++ Headless Editor
-        run: |
-          mkdir -p editor/build
-          cd editor/build
-          cmake -DCMAKE_BUILD_TYPE=Release ..
-          make -j2
-          ./hyper_editor --help || true
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-noto-ui-core fontconfig
+          fc-cache -f >/dev/null
+          pip install requests "edge-tts>=6.1.12"
 
       - name: Mark processing in Supabase
         if: env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
@@ -103,14 +97,8 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"status":"processing","step":"Executing Reel Engine (9:16)","progress":10}' || true
 
-      - name: Render Reel via Primary C++ Engine Pipeline
-        run: |
-          editor/build/hyper_pipeline || editor/build/hyper_long_form
-
-      - name: Export Directly to Google Drive (Videos Folder)
-        if: success()
-        run: |
-          editor/build/hyper_drive_export || true
+      - name: Render Reel (script, stock footage, voice, music, edit, Drive)
+        run: python reel/render_reel.py
 
       - name: Verify Completion in Supabase
         if: success() && env.SUPABASE_URL != '' && env.SUPABASE_SERVICE_ROLE_KEY != ''
