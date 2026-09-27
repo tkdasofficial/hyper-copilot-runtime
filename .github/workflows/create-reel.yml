@@ -71,7 +71,7 @@ jobs:
       IMAGE_STYLE: ${{ github.event.client_payload.image_style || 'Cinematic 3D' }}
       ASPECT_RATIO: ${{ github.event.client_payload.aspect_ratio || '9:16' }}
       DURATION_SECONDS: ${{ github.event.client_payload.duration_seconds || inputs.duration_seconds || '15' }}
-      CAPTIONS: ${{ github.event.client_payload.captions || inputs.captions || 'true' }}
+      CAPTIONS: ${{ github.event.client_payload.captions.enabled || inputs.captions || 'true' }}
       CAPTION_SCALE: ${{ github.event.client_payload.caption_scale || '4' }}
     steps:
       - uses: actions/checkout@v4
