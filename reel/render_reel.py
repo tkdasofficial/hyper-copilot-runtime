@@ -306,19 +306,33 @@ def search_pixabay(q, cfg, photos=False):
     return out
 
 
+def unusable_asset(path: Path, kind: str) -> bool:
+    # Reject black footage/images; a caption over blank black is not a visual.
+    try:
+        probe = ["-ss", "1", "-i", str(path)] if kind == "video" else ["-i", str(path)]
+        result = subprocess.run(["ffmpeg", "-v", "error", *probe, "-frames:v", "1", "-vf", "scale=32:32,format=gray", "-f", "rawvideo", "-"], capture_output=True, timeout=20)
+        pixels = result.stdout
+        return not pixels or (len(pixels) >= 1024 and sum(pixels[:1024]) / 1024 < 12)
+    except Exception:
+        return True
+
+
 def fetch_asset(keywords, cfg, idx) -> dict:
     photos = str(cfg["visual_type"]).lower().startswith("stock photo")
     neg = _neg_terms(cfg)
     sources = str(cfg["sources"]).lower()
     for q in [str(k).strip() for k in keywords if str(k).strip()] + [cfg["prompt"][:80]]:
         cands = []
-        if "pexels" in sources:
-            cands += search_pexels(q, cfg, photos)
-        if "pixabay" in sources:
-            cands += search_pixabay(q, cfg, photos)
+        for use_photos in ([True] if photos else [False, True]):
+            if "pexels" in sources:
+                cands += search_pexels(q, cfg, use_photos)
+            if "pixabay" in sources:
+                cands += search_pixabay(q, cfg, use_photos)
         cands = [c for c in cands if c["id"] not in USED and not any(n in c["label"] for n in neg)]
-        terms = [w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) > 2]
-        cands.sort(key=lambda c: sum(w in c["label"] for w in terms), reverse=True)
+        terms = [w for w in re.findall(r"[a-z0-9]+", q.lower()) if len(w) > 3 and w not in ("real", "footage", "video", "stock", "planet", "space")]
+        if terms:
+            cands = [c for c in cands if any(w in c["label"] for w in terms)]
+        cands.sort(key=lambda c: (sum(w in c["label"] for w in terms), c["kind"] == "video"), reverse=True)
         for c in cands[:4]:
             ext = "jpg" if c["kind"] == "image" else "mp4"
             dest = WORK / f"asset_{idx}.{ext}"
@@ -328,7 +342,7 @@ def fetch_asset(keywords, cfg, idx) -> dict:
                     with open(dest, "wb") as f:
                         for chunk in r.iter_content(1 << 20):
                             f.write(chunk)
-                if dest.stat().st_size > 20_000:
+                if dest.stat().st_size > 20_000 and not unusable_asset(dest, c["kind"]):
                     USED.add(c["id"])
                     return {"path": dest, "kind": c["kind"]}
             except Exception as e:
