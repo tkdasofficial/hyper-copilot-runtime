@@ -971,6 +971,14 @@ def main():
                 continue
         print("[director] script score:", review.get("score"), review.get("issues"))
         visuals.enforce_shot_variety(scenes)
+        # Infographics are an accent, not the edit: max 2, never back-to-back; footage stays primary.
+        last_info, n_info = -9, 0
+        for k, s in enumerate(scenes):
+            if isinstance(s.get("infographic"), dict):
+                if n_info >= 2 or k - last_info < 3 or k == 0:
+                    s["infographic"] = None
+                else:
+                    last_info, n_info = k, n_info + 1
         GRADE["vf"] = visuals.grade_filter(script.get("visual_bible"))
         title = script.get("title") or cfg["prompt"][:60]
         update_row(vid, step=f"Script ready: {len(scenes)} scenes", progress=18, title=title)
@@ -998,10 +1006,10 @@ def main():
                              "narration": sc["narration"]})
             cursor += d
 
-        def pick(queries, shot, narration, prev_hash):
+        def pick(queries, shot, narration, prev_hash, check_vision=True):
             """Stock candidate that is relevant (vision) and not a repeat (dHash)."""
             best = None
-            for attempt in range(3):
+            for attempt in range(2 if check_vision else 1):
                 qs = [visuals.shape_query(q, shot) if attempt == 0 else q for q in queries]
                 asset = fetch_asset(qs, cfg, len(clips) * 10 + attempt)
                 if not asset:
@@ -1009,7 +1017,7 @@ def main():
                 h = visuals.dhash(asset["path"], asset["kind"])
                 sim = visuals.similarity(h, prev_hash)
                 b64 = visuals.jpeg_b64(asset["path"], asset["kind"])
-                score = director.vision_score(b64, narration, queries[0]) if b64 else None
+                score = director.vision_score(b64, narration, queries[0]) if (b64 and check_vision) else None
                 asset.update(hash=h, sim=sim, score=score, query=qs[0])
                 ok = sim < 0.9 and (score is None or score >= 0.45)
                 if best is None or (ok and not best.get("_ok")) or ((score or 0.5) - sim > (best.get("score") or 0.5) - best["sim"]):
@@ -1034,7 +1042,7 @@ def main():
             out, meta, last = [], [], None
             for j in range(segments):
                 ordered = queries[j % len(queries):] + queries[:j % len(queries)]
-                asset = pick(ordered, sc["shot_type"], sc["narration"], prev_hash)
+                asset = pick(ordered, sc["shot_type"], sc["narration"], prev_hash, check_vision=(j == 0))
                 if not asset and j == 0:
                     asset = pick([cfg["prompt"]] + queries[-1:], "", sc["narration"], prev_hash)
                 if not asset:
@@ -1077,7 +1085,7 @@ def main():
                     "relevance": [m.get("relevance") for m in scene_meta[i]], "similarity": [m.get("similarity") for m in scene_meta[i]],
                     "shot": sc["shot_type"], "dur": round(sc["dur"], 2)} for i, sc in enumerate(timeline)]
         edit_review = director.critique_edit(summary, cfg)
-        for fx in (edit_review.get("fixes") or [])[:3]:
+        for fx in (edit_review.get("fixes") or [])[:2]:
             try:
                 k = int(fx.get("i"))
                 if not 0 <= k < len(timeline):
