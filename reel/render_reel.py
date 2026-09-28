@@ -768,6 +768,7 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
                                   c["kind"] == "video"), reverse=True)
         fresh = fresh[:8]
         if not fresh:
+            print(f"[visual] no search results passed the label filter for {batch}")
             continue
 
         def judge(c):
@@ -776,7 +777,7 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
                 _VSCORE[c["id"]] = director.vision_score(b64, subject, claim) if b64 else None
             return c, _VSCORE[c["id"]], h
 
-        with ThreadPoolExecutor(max_workers=8) as ex:
+        with ThreadPoolExecutor(max_workers=4) as ex:
             for c, v, h in ex.map(judge, fresh):
                 sim = max([visuals.similarity(h, u) for u in used_hashes] or [0.0])
                 base = v if v is not None else c["label_rel"] * 0.8
@@ -789,9 +790,9 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
                 # reel's subject world (e.g. saturn/planet/space), otherwise "year" matches a party photo.
                 c["ok"] = sim < 0.88 and ((v >= min_score) if v is not None else (c["label_rel"] >= 0.5 and anchored))
                 if v is None and not anchored:
-                    continue  # unverifiable and not about the subject: never usable, not even as a weak fallback
+                    c["final"] = round(c["final"] * 0.3, 3)  # unverifiable + off-subject label: last-resort only
                 if v is not None and v < 0.3:
-                    continue  # vision says unrelated
+                    c["final"] = round(c["final"] - 1.0, 3)  # vision says unrelated: behind every other option
                 scored.append(c)
         if any(c["ok"] for c in scored):
             break
