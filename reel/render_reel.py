@@ -442,6 +442,8 @@ def el_settings(cfg, rate: str):
 
 
 EL_DISABLED = {"off": False}
+import threading as _th
+EL_SLOTS = _th.BoundedSemaphore(int(os.environ.get("ELEVENLABS_CONCURRENCY", "2") or 2))  # plan limit: 2 concurrent
 
 
 def el_tts(text, cfg, out: Path, rate: str, ctx=None):
@@ -460,8 +462,13 @@ def el_tts(text, cfg, out: Path, rate: str, ctx=None):
         body["language_code"] = EL_LANG[lang]
     if model == "eleven_v3":
         body["voice_settings"] = {"stability": 0.5, "similarity_boost": 0.75, "use_speaker_boost": True}
-    r = requests.post(f"https://api.elevenlabs.io/v1/text-to-speech/{el_voice(cfg)}/with-timestamps?output_format=mp3_44100_128",
-                      headers={"xi-api-key": key, "Content-Type": "application/json"}, json=body, timeout=120)
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{el_voice(cfg)}/with-timestamps?output_format=mp3_44100_128"
+    for wait in (0, 3, 6, 12, 20):  # 429 concurrent/rate limit: wait for a free slot instead of dropping to Edge
+        time.sleep(wait)
+        with EL_SLOTS:
+            r = requests.post(url, headers={"xi-api-key": key, "Content-Type": "application/json"}, json=body, timeout=120)
+        if r.status_code != 429:
+            break
     if r.status_code in (401, 402, 403):
         EL_DISABLED["off"] = True  # key/quota problem: stop calling for this render
     if not r.ok:
@@ -733,8 +740,12 @@ def ai_still(prompt, cfg, idx, _grade=None):
     acc, tok = os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""), os.environ.get("CLOUDFLARE_API_TOKEN", "")
     if not acc or not tok:
         return None
+    # numbers/claims in the prompt make FLUX paint garbled captions ("0.69 g/cum3") - describe the subject only
+    prompt = re.sub(r"[\d.,%/°]+\s*\w{0,4}", " ", re.sub(r"\([^)]*\)", " ", prompt))
+    prompt = re.sub(r"\s+", " ", prompt).strip()[:300]
     full = (f"{prompt}. Photorealistic cinematic documentary frame, {cfg.get('style', 'cinematic')} style, "
-            "accurate science visualization, vertical composition, no text, no watermark, no people unless mentioned")
+            "accurate science visualization, vertical composition, absolutely no text, no letters, no numbers, no labels, "
+            "no diagram annotations, no watermark, no people unless mentioned")
     for attempt in range(2):
         try:
             r = requests.post(f"https://api.cloudflare.com/client/v4/accounts/{acc}/ai/run/@cf/black-forest-labs/flux-1-schnell",
