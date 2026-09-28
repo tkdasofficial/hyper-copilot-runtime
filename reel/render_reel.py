@@ -4,8 +4,8 @@ Hyper Copilot — Reel engine (short form, 9:16).
 
 Reads the grouped dispatch payload (PAYLOAD_JSON, <= 10 top-level keys with
 sub-properties) and builds a real video:
-  script (NVIDIA NIM) -> stock footage (Pexels + Pixabay) -> edge-tts voice
-  (English / Hindi / Bengali) -> Drive Audio Library music -> editing template
+  script (NVIDIA NIM) -> stock footage (Pexels + Pixabay) -> ElevenLabs voice (Edge TTS
+  backup) (English / Hindi / Hinglish / Bengali) -> Drive Audio Library music -> editing template
   (zoom, pan/keyframes, speed, vignette/mask, overlays, captions) -> Google
   Drive "Videos" folder. Progress is written to the Supabase `videos` row.
 """
@@ -280,7 +280,114 @@ def _one(text, voice, out: Path, rate: str, pitch: str):
     raise RuntimeError("Voice generation failed")
 
 
+# ---------------------------------------------------------------- ElevenLabs (primary)
+# Default ElevenLabs voices per category: (male, female). All are multilingual
+# premade voices, so they speak English, Hindi, Hinglish and Bengali.
+EL_VOICES = {
+    "news":        ("nPczCjzI2devNBz1zQrb", "EXAVITQu4vr4xnSDxMaL"),  # Brian / Sarah
+    "fact":        ("nPczCjzI2devNBz1zQrb", "EXAVITQu4vr4xnSDxMaL"),  # Brian / Sarah
+    "documentary": ("JBFqnCBsd6RMkjVDRZzb", "Xb7hH8MSUJpSbSDYk0k2"),  # George / Alice
+    "history":     ("JBFqnCBsd6RMkjVDRZzb", "Xb7hH8MSUJpSbSDYk0k2"),  # George / Alice
+    "science":     ("onwK4e9ZLuTAKqWW03F9", "Xb7hH8MSUJpSbSDYk0k2"),  # Daniel / Alice
+    "space":       ("onwK4e9ZLuTAKqWW03F9", "Xb7hH8MSUJpSbSDYk0k2"),  # Daniel / Alice
+    "education":   ("onwK4e9ZLuTAKqWW03F9", "XrExE9yKIg1WjnnlVkGX"),  # Daniel / Matilda
+    "tech":        ("TX3LPaxmHKxFdv7VOQHJ", "cgSgspJ2msm6clMCkdW9"),  # Liam / Jessica
+    "story":       ("N2lVS1w4EtoT3dr4eOWO", "pFZP5JQG7iQjIQuC4Bku"),  # Callum / Lily
+    "mystery":     ("N2lVS1w4EtoT3dr4eOWO", "pFZP5JQG7iQjIQuC4Bku"),  # Callum / Lily
+    "horror":      ("N2lVS1w4EtoT3dr4eOWO", "pFZP5JQG7iQjIQuC4Bku"),  # Callum / Lily
+    "motivation":  ("pqHfZKP75CvOlQylNhV4", "FGY2WhTYpPnrIDTdsKH5"),  # Bill / Laura
+    "comedy":      ("IKne3meq5aSn9XLyUdCD", "cgSgspJ2msm6clMCkdW9"),  # Charlie / Jessica
+    "entertainment": ("IKne3meq5aSn9XLyUdCD", "cgSgspJ2msm6clMCkdW9"),
+    "default":     ("nPczCjzI2devNBz1zQrb", "EXAVITQu4vr4xnSDxMaL"),
+}
+EL_LANG = {"english": "en", "hindi": "hi", "bengali": "bn"}  # Hinglish: auto-detect
+
+
+def el_voice(cfg):
+    override = os.environ.get("ELEVENLABS_VOICE_ID", "").strip()
+    if override:
+        return override
+    cat = str(cfg.get("category", "")).lower()
+    pair = next((v for k, v in EL_VOICES.items() if k != "default" and k in cat), EL_VOICES["default"])
+    return pair[1] if cfg["gender"].startswith("f") else pair[0]
+
+
+def el_settings(cfg, rate: str):
+    cat = str(cfg.get("category", "")).lower()
+    speed = max(0.8, min(1.2, 1.0 + _pct(rate) / 150))
+    if any(k in cat for k in ("story", "mystery", "horror", "motivation")):
+        return {"stability": 0.38, "similarity_boost": 0.8, "style": 0.55, "use_speaker_boost": True, "speed": speed}
+    if any(k in cat for k in ("news", "fact", "comedy", "entertainment", "tech")):
+        return {"stability": 0.42, "similarity_boost": 0.78, "style": 0.45, "use_speaker_boost": True, "speed": speed}
+    return {"stability": 0.55, "similarity_boost": 0.75, "style": 0.3, "use_speaker_boost": True, "speed": speed}
+
+
+EL_DISABLED = {"off": False}
+
+
+def el_tts(text, cfg, out: Path, rate: str):
+    """ElevenLabs with timestamps -> mp3 + word timings. Raises on any failure."""
+    key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+    if not key or EL_DISABLED["off"]:
+        raise RuntimeError("ElevenLabs unavailable")
+    import base64
+    lang = str(cfg["language"]).lower()
+    model = os.environ.get("ELEVENLABS_MODEL", "").strip() or ("eleven_v3" if lang == "bengali" else "eleven_multilingual_v2")
+    body = {"text": text, "model_id": model, "voice_settings": el_settings(cfg, rate)}
+    if lang in EL_LANG and model != "eleven_multilingual_v2":
+        body["language_code"] = EL_LANG[lang]
+    if model == "eleven_v3":
+        body["voice_settings"] = {"stability": 0.5, "similarity_boost": 0.75, "use_speaker_boost": True}
+    r = requests.post(f"https://api.elevenlabs.io/v1/text-to-speech/{el_voice(cfg)}/with-timestamps?output_format=mp3_44100_128",
+                      headers={"xi-api-key": key, "Content-Type": "application/json"}, json=body, timeout=120)
+    if r.status_code in (401, 402, 403):
+        EL_DISABLED["off"] = True  # key/quota problem: stop calling for this render
+    if not r.ok:
+        raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:200]}")
+    data = r.json()
+    out.write_bytes(base64.b64decode(data["audio_base64"]))
+    if out.stat().st_size < 1000:
+        raise RuntimeError("ElevenLabs returned empty audio")
+    al = data.get("alignment") or data.get("normalized_alignment") or {}
+    chars, starts, ends = al.get("characters", []), al.get("character_start_times_seconds", []), al.get("character_end_times_seconds", [])
+    words, cur, ws, we = [], "", None, 0.0
+    for c, a, b in zip(chars, starts, ends):
+        if c.isspace():
+            if cur:
+                words.append((ws, max(0.05, we - ws), cur))
+            cur, ws = "", None
+        else:
+            if ws is None:
+                ws = a
+            cur += c
+            we = b
+    if cur:
+        words.append((ws, max(0.05, we - ws), cur))
+    if not words:
+        d = probe_duration(out)
+        toks = text.split()
+        step = d / max(1, len(toks))
+        words = [(i * step, step, t) for i, t in enumerate(toks)]
+    return trim_voice(out, words)
+
+
 def tts(text, cfg, out: Path, rate: str):
+    """ElevenLabs first; Edge TTS only if ElevenLabs fails."""
+    for attempt in range(2):
+        try:
+            w = el_tts(text, cfg, out, rate)
+            print(f"[reel] voice: ElevenLabs ({el_voice(cfg)})")
+            return w
+        except Exception as e:
+            print("[reel] ElevenLabs failed:", e)
+            if EL_DISABLED["off"] or not os.environ.get("ELEVENLABS_API_KEY"):
+                break
+            time.sleep(2)
+    print("[reel] voice: Edge TTS backup")
+    return edge_tts_voice(text, cfg, out, rate)
+
+
+def edge_tts_voice(text, cfg, out: Path, rate: str):
     """Sentence-level pacing: each sentence gets its own rate/pitch, then joined tight."""
     male, female = VOICES.get(str(cfg["language"]).lower(), VOICES["english"])
     voice = female if cfg["gender"].startswith("f") else male
