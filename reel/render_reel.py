@@ -1140,7 +1140,13 @@ class Planner:
                     continue
                 if sc.get("infographic") and self.info_ok(i):
                     return self._info_plan(i, sc, sc["infographic"], subject, claim, nframes)
-                raise RuntimeError(f"no usable footage for scene {i + 1} ('{subject}')")
+                # Last resort before failing the reel: broad on-topic footage (still anchored, still de-duplicated).
+                broad = [f"{self.cfg['topic']} {a}" for a in sorted(ANCHORS)[:3]] + [self.cfg["topic"]]
+                asset = select_asset(broad, self.cfg, self._nidx(), self.cfg["topic"], claim, used, min_score=0.45,
+                                     exclude=exclude)
+                if asset is None:
+                    raise RuntimeError(f"no usable footage for scene {i + 1} ('{subject}')")
+                asset["weak"] = True
             if j == 0 and asset.get("weak") and sc.get("infographic") and self.info_ok(i):
                 USED.discard(asset["id"])
                 return self._info_plan(i, sc, sc["infographic"], subject, claim, nframes)
