@@ -50,9 +50,17 @@ VISION_MODELS = ["meta/llama-4-maverick-17b-128e-instruct", "meta/llama-3.2-90b-
 _CF_AGREED = set()
 
 
+_WORDS = {"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+
+
 def _parse_score(text):
     m = re.search(r"\"?score\"?\s*[:=]\s*(\d+(?:\.\d+)?)", text) or re.search(r"\b(\d+(?:\.\d+)?)\s*/\s*10", text)
     if not m:
+        m = re.search(r"\b(?:score|rate|rating)\D{0,12}(\d+(?:\.\d+)?)\b", text, re.I)
+    if not m:
+        w = re.search(r"\b(" + "|".join(_WORDS) + r")\s*(?:out of|/)\s*(?:10|ten)\b", text, re.I)
+        if w:
+            return _WORDS[w.group(1).lower()] / 10
         raise ValueError("no score in reply: " + text[:80])
     return max(0.0, min(1.0, float(m.group(1)) / 10))
 
@@ -69,7 +77,7 @@ def _cf_vision(model, image_b64, prompt, timeout):
         _CF_AGREED.add(model)
     import base64 as _b
     body = ({"image": list(_b.b64decode(image_b64)), "prompt": prompt, "max_tokens": 120} if "llava" in model else
-            {"messages": [{"role": "user", "content": prompt}], "image": list(_b.b64decode(image_b64)), "max_tokens": 120})
+            {"prompt": prompt, "image": list(_b.b64decode(image_b64)), "max_tokens": 120})
     r = requests.post(url, headers=h, json=body, timeout=timeout)
     if r.status_code in (400, 401, 403, 404, 422):
         raise LookupError(f"{r.status_code} {r.text[:120]}")
@@ -101,7 +109,10 @@ def vision_ready(sample_b64: str) -> bool:
     for model in [m for m in VISION_MODELS if m not in VISION_STATE["dead"]]:
         t0 = time.time()
         try:
-            _vision_call(model, sample_b64, 'Is this an image? Reply JSON {"score": 10}', 30)
+            try:
+                _vision_call(model, sample_b64, 'Rate 0-10 how sharp this image is. Reply JSON only: {"score": n}', 30)
+            except ValueError:
+                pass  # the model answered (just not in JSON): it is reachable and can see the image
             VISION_STATE["model"] = model
             print(f"[vision] using {model} ({time.time() - t0:.1f}s probe)")
             return True
