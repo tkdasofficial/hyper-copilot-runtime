@@ -1164,6 +1164,9 @@ class Planner:
         segs_n = max(1, math.ceil(sc["dur"] / self.cut_len)) if self.t.get("fact_style") else 1
         cuts = [round(nframes * k / segs_n) for k in range(segs_n + 1)]
         used = self.used_hashes(skip=i)
+        # never reuse a clip/photo already placed in another scene (hashes of photo vs. thumbnail can differ)
+        exclude = tuple(exclude) + tuple(sg["asset"]["id"] for k, p in self.plans.items() if k != i
+                                         for sg in p.get("segments", []) if sg.get("asset"))
         segments = []
         for j in range(segs_n):
             ordered = queries[j % len(queries):] + queries[:j % len(queries)]
@@ -1187,6 +1190,13 @@ class Planner:
                 if asset is None:
                     raise RuntimeError(f"no usable footage for scene {i + 1} ('{subject}')")
                 asset.setdefault("weak", asset.get("src") != "ai")
+            if asset is not None and asset.get("weak") and (asset.get("score") is None or asset["score"] < 0.4):
+                # Stock only had an unrelated shot (vision: "wind turbine" for Saturn's winds). An exact generated
+                # still of the subject beats a misleading clip; keep the stock clip only if generation fails.
+                gen = ai_still(f"{subject}. {claim}".strip(), self.cfg, self._nidx())
+                if gen is not None:
+                    USED.discard(asset["id"])
+                    asset = gen
             if j == 0 and asset.get("weak") and sc.get("infographic") and self.info_ok(i):
                 USED.discard(asset["id"])
                 return self._info_plan(i, sc, sc["infographic"], subject, claim, nframes)
