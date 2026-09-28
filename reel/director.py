@@ -83,7 +83,8 @@ def _cf_vision(model, image_b64, prompt, timeout):
         raise LookupError(f"{r.status_code} {r.text[:120]}")
     r.raise_for_status()
     res = r.json().get("result") or {}
-    return _parse_score(res.get("response") or res.get("description") or "")
+    out = res.get("response") or res.get("description") or ""
+    return _parse_score(out if isinstance(out, str) else json.dumps(out))
 
 
 def _vision_call(model, image_b64, prompt, timeout):
@@ -131,8 +132,10 @@ def vision_score(image_b64: str, subject: str, claim: str = ""):
     prompt = (f"A short documentary scene is about: {subject}.\n" + (f"The narrator says (English gist): {claim}\n" if claim else "") +
               "Score how well THIS image shows that exact subject, 0-10. 9-10: clearly the exact subject. 6-8: the subject, "
               "loosely framed. 3-5: generic/related mood only. 0-2: unrelated or contradicting (wrong planet, wrong object, "
-              "people/office when the topic is astronomy, text-heavy thumbnails). Reply JSON only: {\"score\": n, \"why\": \"...\"}")
+              "people/office when the topic is astronomy, text-heavy thumbnails). Reply with JSON only, no other words: {\"score\": n}")
     for attempt in range(2):
+        if not VISION_STATE["model"] and not vision_ready(image_b64):
+            return None
         try:
             VISION_STATE["calls"] += 1
             v = _vision_call(VISION_STATE["model"], image_b64, prompt, 20)
@@ -238,16 +241,19 @@ def research(cfg) -> list:
     web = _web(f"{topic} facts", n_web + 2)
     sources = []
     if wiki:
-        main = _tf(wiki[0]["text"])
+        # Compare content WITHOUT the shared topic word, otherwise "Saturn V" and "Sega Saturn" look on-topic.
+        tw = {w.lower() for w in re.findall(r"\w+", topic)}
+        _strip = lambda d: {k: v for k, v in d.items() if k not in tw}
+        main = _strip(_tf(wiki[0]["text"]))
         sources.append(wiki[0])
         for s in wiki[1:]:
-            c = _cos(main, _tf(s["text"]))
+            c = _cos(main, _strip(_tf(s["text"])))
             if c >= 0.35 and len(sources) < n_wiki:
                 sources.append(s)
             else:
                 print(f"[research] dropped off-topic source '{s['title']}' (similarity {c:.2f})")
         for s in web:
-            c = _cos(main, _tf(s["text"]))
+            c = _cos(main, _strip(_tf(s["text"])))
             if c >= 0.2 and len(sources) < n_wiki + n_web:
                 sources.append(s)
             else:
