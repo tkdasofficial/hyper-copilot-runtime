@@ -734,6 +734,16 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
     photos_only = str(cfg["visual_type"]).lower().startswith("stock photo")
     neg = _neg_terms(cfg)
     order = [p for p in ("pexels", "pixabay") if p in str(cfg["sources"]).lower()] or ["pexels", "pixabay"]
+    topic_words = {w.lower() for w in re.findall(r"[A-Za-z]{4,}", str(cfg.get("topic", "")))}
+    clean = []
+    for q in queries:  # chart words describe an edit decision, not footage
+        q = re.sub(r"\b(infographic|chart|graph|diagram|comparison|3d animation|animation|visualization)\b", " ", str(q), flags=re.I)
+        q = re.sub(r"\s+", " ", q).strip()
+        if q and len(q.split()) == 1 and q.lower() not in topic_words:
+            q = f"{cfg.get('topic', '')} {q}".strip()
+        if q:
+            clean.append(q)
+    queries = clean or [str(cfg.get("topic") or cfg["prompt"])]
     qs, seen_q = [], set()
     for q in [visuals.shape_query(queries[0], shot)] + list(queries) + [r for q in queries[:2] for r in _refine(q)]:
         if q and q.lower() not in seen_q:
@@ -772,12 +782,16 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
                 base = v if v is not None else c["label_rel"] * 0.8
                 c.update(vision=v, sim=round(sim, 2), thumb_hash=h,
                          final=round(base - max(0.0, sim - 0.7) * 2 + (0.03 if c["kind"] == "video" else 0), 3))
-                anchored = not ANCHORS or any(a in c["label"] for a in ANCHORS)
+                lab_l = c["label"].lower()
+                anchored = (not ANCHORS or any(w in lab_l for w in topic_words)
+                            or sum(a in lab_l for a in ANCHORS) >= 2)
                 # Without a vision verdict a label match alone is not enough: the stock label must name the
                 # reel's subject world (e.g. saturn/planet/space), otherwise "year" matches a party photo.
                 c["ok"] = sim < 0.88 and ((v >= min_score) if v is not None else (c["label_rel"] >= 0.5 and anchored))
                 if v is None and not anchored:
-                    base *= 0.3
+                    continue  # unverifiable and not about the subject: never usable, not even as a weak fallback
+                if v is not None and v < 0.3:
+                    continue  # vision says unrelated
                 scored.append(c)
         if any(c["ok"] for c in scored):
             break
@@ -809,9 +823,7 @@ def _refine(q):
     out = []
     if len(t) > 2:
         out.append(" ".join(t[:2]))
-    if len(t) > 1:
-        out.append(t[-1] if len(t[-1]) > len(t[0]) else t[0])
-    return out
+    return out  # never a single generic word: "rings" alone returns wedding rings
 
 
 def fetch_asset(keywords, cfg, idx) -> dict:
