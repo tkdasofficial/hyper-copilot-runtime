@@ -933,6 +933,7 @@ def main():
             cursor += d
 
         clips = []
+        last_asset = None
         for i, sc in enumerate(timeline):
             update_row(vid, step=f"Stock footage & editing {i + 1}/{len(timeline)}", progress=40 + int(35 * i / len(timeline)))
             # Cut within longer narration scenes, keeping footage tied to this fact.
@@ -942,8 +943,10 @@ def main():
             for j in range(segments):
                 ordered = queries[j % len(queries):] + queries[:j % len(queries)] if queries else [cfg["prompt"]]
                 asset = fetch_asset(ordered, cfg, len(clips))
+                if not asset and j == 0:
+                    asset = fetch_asset([cfg["prompt"]] + queries[-1:], cfg, len(clips))
                 if not asset:
-                    if j > 0:
+                    if last_asset is not None:
                         # Hold the previous on-topic clip longer instead of inserting filler.
                         clips.append(render_scene(last_asset, t, len(clips), clip_len, W, H, fps))
                         continue
