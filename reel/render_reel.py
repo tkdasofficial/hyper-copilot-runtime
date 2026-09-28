@@ -168,6 +168,13 @@ Target about {total_words} spoken words across about {scenes} short scenes for a
 - Make factual claims precise; never invent numbers, quotations, or unsupported superlatives. Follow user instructions and exclusions.
 - Keep each scene 1-2 short sentences (about 3-6 seconds spoken) so visuals can follow the narration closely.
 - Each scene must have a SPECIFIC visual subject matching exactly what is spoken at that moment. Provide 3 concrete English stock-search phrases ordered most relevant first: named subject and visible action/object, not vague scenery. Search stock for real footage; do not request AI artwork.
+- VOICE-READY TEXT (read aloud by ElevenLabs TTS, so write exactly what is spoken):
+  * Write EVERY number as spoken words in the narration language, the way a presenter says it: English "three hundred eighty-four thousand kilometres"; Hindi/Hinglish "तीन लाख चौरासी हज़ार किलोमीटर"; Bengali in Bengali words. Never use digits in narration.
+  * Round big or awkward numbers naturally ("लगभग चार लाख किलोमीटर", "about four billion years"); at most one number per sentence, and put a comma before a big number so it lands with emphasis.
+  * Years as spoken: "nineteen sixty-nine" / "उन्नीस सौ उनहत्तर". Decimals and fractions in words ("साढ़े तीन", "one point six").
+  * No symbols or abbreviations: write percent/प्रतिशत, degree Celsius/डिग्री सेल्सियस, kilometre/किलोमीटर, NASA stays NASA. No %, °, km, kg, ~, /, &, +, x, brackets, quotes, emoji, hashtags or ellipses.
+  * Short, clear sentences (max about 14 words), simple word order, no tongue-twisters, no stacked clauses. End every sentence with . ? or ! (Hindi may use ।).
+  * Hinglish: Hindi words only in Devanagari and English words only in Latin script; never transliterate English words into Devanagari or Hindi words into Latin.
 - Keep badge and headline optional and brief; headline 1-3 words, not narration repeated. Captions will follow word timing.
 
 Return JSON:
@@ -210,6 +217,78 @@ Return JSON:
                 time.sleep(3 * (attempt + 1))
     raise RuntimeError(f"Could not write the script: {last_err}")
 
+
+
+# ---------------------------------------------------------------- spoken text
+HI_NUM = ("शून्य एक दो तीन चार पाँच छह सात आठ नौ दस ग्यारह बारह तेरह चौदह पंद्रह सोलह सत्रह अठारह उन्नीस बीस "
+          "इक्कीस बाईस तेईस चौबीस पच्चीस छब्बीस सत्ताईस अट्ठाईस उनतीस तीस इकतीस बत्तीस तैंतीस चौंतीस पैंतीस छत्तीस सैंतीस अड़तीस उनतालीस चालीस "
+          "इकतालीस बयालीस तैंतालीस चवालीस पैंतालीस छियालीस सैंतालीस अड़तालीस उनचास पचास इक्यावन बावन तिरपन चौवन पचपन छप्पन सत्तावन अट्ठावन उनसठ साठ "
+          "इकसठ बासठ तिरसठ चौंसठ पैंसठ छियासठ सड़सठ अड़सठ उनहत्तर सत्तर इकहत्तर बहत्तर तिहत्तर चौहत्तर पचहत्तर छिहत्तर सतहत्तर अठहत्तर उनासी अस्सी "
+          "इक्यासी बयासी तिरासी चौरासी पचासी छियासी सत्तासी अट्ठासी नवासी नब्बे इक्यानवे बानवे तिरानवे चौरानवे पचानवे छियानवे सत्तानवे अट्ठानवे निन्यानवे").split()
+EN_ONES = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
+EN_TENS = "  twenty thirty forty fifty sixty seventy eighty ninety".split(" ")
+
+
+def _en(n: int) -> str:
+    if n < 20: return EN_ONES[n]
+    if n < 100: return EN_TENS[n // 10] + ("-" + EN_ONES[n % 10] if n % 10 else "")
+    if n < 1000: return EN_ONES[n // 100] + " hundred" + (" " + _en(n % 100) if n % 100 else "")
+    for v, w in ((10**12, "trillion"), (10**9, "billion"), (10**6, "million"), (1000, "thousand")):
+        if n >= v:
+            return _en(n // v) + " " + w + (" " + _en(n % v) if n % v else "")
+    return str(n)
+
+
+def _hi(n: int) -> str:
+    if n < 100: return HI_NUM[n]
+    for v, w in ((10**7, "करोड़"), (10**5, "लाख"), (1000, "हज़ार"), (100, "सौ")):
+        if n >= v:
+            return _hi(n // v) + " " + w + (" " + _hi(n % v) if n % v else "")
+    return str(n)
+
+
+def _year(n: int, hi: bool) -> str:
+    a, b = divmod(n, 100)
+    if hi:
+        return _hi(n) if a % 10 == 0 else f"{_hi(a)} सौ" + (f" {_hi(b)}" if b else "")
+    if a % 10 == 0:
+        return _en(n)
+    return f"{_en(a)} " + ("hundred" if b == 0 else (f"oh {_en(b)}" if b < 10 else _en(b)))
+
+
+def spoken_text(text: str, cfg) -> str:
+    """Last-mile cleanup so TTS never reads digits, symbols or abbreviations oddly."""
+    lang = str(cfg["language"]).lower()
+    hi = lang in ("hindi", "hinglish")
+    if lang == "bengali":
+        return re.sub(r"\s+", " ", re.sub(r"[\"“”#*_~()\[\]{}]|\.\.\.|…", " ", text)).strip()
+    unit = {"%": (" percent", " प्रतिशत"), "°C": (" degree Celsius", " डिग्री सेल्सियस"), "°F": (" degree Fahrenheit", " डिग्री फ़ारेनहाइट"),
+            "°": (" degree", " डिग्री"), "km/h": (" kilometres per hour", " किलोमीटर प्रति घंटा"), "km": (" kilometres", " किलोमीटर"),
+            "kg": (" kilograms", " किलोग्राम"), "cm": (" centimetres", " सेंटीमीटर"), "mm": (" millimetres", " मिलीमीटर"),
+            "m": (" metres", " मीटर"), "$": (" dollars", " डॉलर"), "₹": (" rupees", " रुपये")}
+    t = text.replace("&", " and " if not hi else " और ").replace("…", ".").replace("...", ".")
+    t = re.sub(r"[\"“”#*_~()\[\]{}]", " ", t)
+    t = re.sub(r"(\d),(?=\d{2,3}\b)", r"\1", t)  # 3,84,400 / 384,400 -> 384400
+    def num(m):
+        whole, frac, u = m.group(1), m.group(2), m.group(3) or ""
+        cur_pre = m.group(0)[0] in "$₹"
+        n = int(whole)
+        if not frac and not u and 1100 <= n <= 2099 and len(whole) == 4:
+            w = _year(n, hi)
+        else:
+            w = _hi(n) if hi else _en(n)
+            if hi and frac == "5" and n >= 3:
+                w, frac = "साढ़े " + w, ""
+            elif hi and frac == "5" and n in (1, 2):
+                w, frac = ("डेढ़", "ढाई")[n - 1], ""
+            if frac:
+                w += (" दशमलव " if hi else " point ") + " ".join((HI_NUM if hi else EN_ONES)[int(d)] for d in frac)
+        cur = unit[m.group(0)[0]][1 if hi else 0] if cur_pre else ""
+        return " " + w + (unit.get(u, ("", ""))[1 if hi else 0]) + cur + " "
+    t = re.sub(r"[$₹]?(\d+)(?:\.(\d+))?\s?(km/h|°C|°F|%|°|km|kg|cm|mm|m\b)?", num, t)
+    t = re.sub(r"\s*([$₹])\s*", lambda m: unit[m.group(1)][1 if hi else 0] + " ", t)
+    t = re.sub(r"\s+([,.!?।])", r"\1", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 # ---------------------------------------------------------------- voice
 VOICES = {
@@ -314,7 +393,7 @@ def el_voice(cfg):
 
 def el_settings(cfg, rate: str):
     cat = str(cfg.get("category", "")).lower()
-    speed = max(0.8, min(1.2, 1.0 + _pct(rate) / 150))
+    speed = max(0.9, min(1.1, 1.0 + _pct(rate) / 220))
     if any(k in cat for k in ("story", "mystery", "horror", "motivation")):
         return {"stability": 0.38, "similarity_boost": 0.8, "style": 0.55, "use_speaker_boost": True, "speed": speed}
     if any(k in cat for k in ("news", "fact", "comedy", "entertainment", "tech")):
@@ -325,7 +404,7 @@ def el_settings(cfg, rate: str):
 EL_DISABLED = {"off": False}
 
 
-def el_tts(text, cfg, out: Path, rate: str):
+def el_tts(text, cfg, out: Path, rate: str, ctx=None):
     """ElevenLabs with timestamps -> mp3 + word timings. Raises on any failure."""
     key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
     if not key or EL_DISABLED["off"]:
@@ -333,7 +412,10 @@ def el_tts(text, cfg, out: Path, rate: str):
     import base64
     lang = str(cfg["language"]).lower()
     model = os.environ.get("ELEVENLABS_MODEL", "").strip() or ("eleven_v3" if lang == "bengali" else "eleven_multilingual_v2")
-    body = {"text": text, "model_id": model, "voice_settings": el_settings(cfg, rate)}
+    body = {"text": text, "model_id": model, "voice_settings": el_settings(cfg, rate), "apply_text_normalization": "auto"}
+    if ctx and model != "eleven_v3":  # request stitching keeps prosody smooth across scenes
+        if ctx.get("prev"): body["previous_text"] = ctx["prev"][-300:]
+        if ctx.get("next"): body["next_text"] = ctx["next"][:300]
     if lang in EL_LANG and model != "eleven_multilingual_v2":
         body["language_code"] = EL_LANG[lang]
     if model == "eleven_v3":
@@ -371,11 +453,12 @@ def el_tts(text, cfg, out: Path, rate: str):
     return trim_voice(out, words)
 
 
-def tts(text, cfg, out: Path, rate: str):
+def tts(text, cfg, out: Path, rate: str, ctx=None):
     """ElevenLabs first; Edge TTS only if ElevenLabs fails."""
+    text = spoken_text(text, cfg)
     for attempt in range(2):
         try:
-            w = el_tts(text, cfg, out, rate)
+            w = el_tts(text, cfg, out, rate, ctx)
             print(f"[reel] voice: ElevenLabs ({el_voice(cfg)})")
             return w
         except Exception as e:
@@ -828,12 +911,15 @@ def main():
         update_row(vid, step=f"Script ready: {len(scenes)} scenes", progress=18, title=title)
 
         rate = t.get("voice_rate", "+8%")
+        for sc in scenes:
+            sc["narration"] = spoken_text(str(sc["narration"]), cfg)
         timeline, cursor = [], 0.0
         audio_parts = []
         for i, sc in enumerate(scenes):
             update_row(vid, step=f"Voiceover {i + 1}/{len(scenes)}", progress=18 + int(22 * i / len(scenes)))
             a = WORK / f"voice_{i:02d}.mp3"
-            words = tts(sc["narration"], cfg, a, rate)
+            ctx = {"prev": scenes[i - 1]["narration"] if i else "", "next": scenes[i + 1]["narration"] if i + 1 < len(scenes) else ""}
+            words = tts(sc["narration"], cfg, a, rate, ctx)
             d = probe_duration(a) + float(t.get("scene_gap", 0.2))
             audio_parts.append((a, d))
             timeline.append({"start": cursor, "end": cursor + d, "dur": d, "words": words,
