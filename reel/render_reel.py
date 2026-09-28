@@ -187,7 +187,7 @@ Return JSON:
     key = os.environ.get("NVIDIA_API_KEY", "")
     last_err = None
     for model in NIM_MODELS:
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 r = requests.post(
                     "https://integrate.api.nvidia.com/v1/chat/completions",
@@ -196,13 +196,17 @@ Return JSON:
                         "model": model,
                         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                         "temperature": 0.6,
-                        "max_tokens": 4000,
+                        "max_tokens": 16000,
                     },
-                    timeout=180,
+                    timeout=300,
                 )
                 if r.status_code >= 400:
                     raise RuntimeError(f"NIM {r.status_code}: {r.text[:300]}")
-                text = r.json()["choices"][0]["message"]["content"] or ""
+                msg = r.json()["choices"][0]["message"]
+                text = msg.get("content") or ""
+                if "{" not in text:
+                    print("[reel] script reply had no JSON; finish:", r.json()["choices"][0].get("finish_reason"))
+                    text = (msg.get("reasoning_content") or "") + text
                 text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
                 m = re.search(r"\{.*\}", text, flags=re.S)
                 data = json.loads(m.group(0))
