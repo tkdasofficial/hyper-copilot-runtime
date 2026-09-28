@@ -14,6 +14,9 @@ from pathlib import Path
 
 import requests
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import director, visuals, sound, qa  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent
 WORK = Path(os.environ.get("WORK_DIR", "/tmp/reel_work"))
 WORK.mkdir(parents=True, exist_ok=True)
@@ -53,7 +56,13 @@ def load_payload() -> dict:
         "caption_size": g("captions.size", default="Medium"),
         "template": g("edit.template", default="Dynamic"),
         "duration": int(float(g("timing.duration_seconds", "duration_seconds", default=env("DURATION_SECONDS", "30")))),
-        "sources": g("stock.sources", default="pexels,pixabay"),
+        "sources": g("visual.sources", "stock.sources", default="pexels,pixabay"),
+        "hook_style": str(g("direction.hook_style", default="auto")).lower(),
+        "pacing": str(g("direction.pacing", default="dynamic")).lower(),
+        "music_level": str(g("direction.music_level", default="medium")).lower(),
+        "sfx_level": str(g("direction.sfx_level", default="medium")).lower(),
+        "creativity": str(g("direction.creativity", default="balanced")).lower(),
+        "research_depth": str(g("direction.research_depth", default="standard")).lower(),
     }
     cfg["duration"] = max(10, min(90, cfg["duration"]))
     cfg["fps"] = 60 if cfg["fps"] >= 60 else 30
@@ -140,15 +149,19 @@ LANG_RULES = {
 }
 
 
-def write_script(cfg) -> dict:
+def write_script(cfg, digest="") -> dict:
     facts = "news" in str(cfg["category"]).lower() or "fact" in str(cfg["category"]).lower()
     lang = str(cfg["language"]).strip().lower()
     words_per_sec = 2.9 if lang == "english" else 2.7
     total_words = int(cfg["duration"] * words_per_sec)
     scenes = max(3, min(15, round(cfg["duration"] / 3.5)))
+    temp = {"safe": 0.35, "bold": 0.85}.get(cfg.get("creativity", "balanced"), 0.6)
+    hook_rule = ("" if cfg.get("hook_style", "auto") == "auto"
+                 else f"- The user prefers hook style: {cfg['hook_style']}.\n")
     system = (
-        "You write accurate, original short-video narration in a natural conversational voice. "
-        "Respect user and negative prompts above all style guidance. Reply with JSON only, no markdown."
+        "You are a documentary director and fact-video writer. You write accurate, original short-video narration "
+        "in a natural conversational voice and plan every shot. Respect user and negative prompts above all style "
+        "guidance. Reply with JSON only, no markdown."
     )
     user = f"""
 Topic / user instructions: {cfg['prompt']}
@@ -157,31 +170,46 @@ Category: {cfg['category']}   Visual style: {cfg['style']}
 {LANG_RULES.get(lang, LANG_RULES['english'])}
 Target about {total_words} spoken words across about {scenes} short scenes for a {cfg['duration']}-second video.
 
+RESEARCH (use ONLY facts supported by these sources; cite source ids per scene):
+{digest or 'none'}
+
+DIRECTION:
+- First write 5 hook candidates (curiosity, shock, question, myth-bust, countdown-tease), score each 0-10 for scroll-stopping power, pick the best as scene 1 (1-3 seconds, no greeting).
+{hook_rule}- Story arc: hook -> context -> escalating facts -> strongest reveal (second-to-last) -> payoff/curiosity ending. Label each scene's purpose.
+- Visual bible: one colour grade (teal_orange | cool | warm | moody | neutral) and one mood for the whole reel.
+- Each scene: shot_type (establishing | close-up | macro | tracking | wide | low-angle | top-down | orbital | timelapse), never the same as the previous scene.
+- If a line is numeric/comparative or unlikely to exist as real stock footage, add an "infographic" {{"type":"stat"|"bars"|"compare","title":"...","items":[{{"label":"...","value":"digits","unit":"..."}}]}}.
+- sfx: "", "whoosh", "impact" or "reveal" — use sparingly (at most every third scene). music_intensity: low | medium | high.
+
 {'FACT VIDEO STYLE:' if facts else 'VIDEO STYLE:'}
 - Open immediately with a strong, specific curiosity hook. No greeting, intro, filler, or closing request to follow/subscribe.
 - Sound energetic, conversational and original, like a good Indian fact-video presenter. Use short, punchy sentences with minimal pauses, and natural punctuation for vocal emphasis on striking words.
 - Use "Did you know?" / "क्या आपको पता है?" only when it sounds natural; do not force or repeat it.
-- Structure each fact: hook → fact → one short explanation → surprising twist/payoff. Every line must move the story forward.
-- Sound like a real short-form creator talking to a friend, never like an AI article. Information-dense: every sentence adds a new detail. End with a memorable payoff line.
-- For Top N/list requests, exactly N distinct facts, each introduced with the fact label defined in LANGUAGE. Do not count down unless user asks. A very short first hook is allowed; no separate outro scene.
+- Every line must move the story forward. Sound like a real creator talking to a friend, never like an AI article.
+- For Top N/list requests, exactly N distinct facts, each introduced with the fact label defined in LANGUAGE. A very short first hook is allowed; no separate outro scene.
 - For one focused topic, explain that topic with connected scenes and a strong final payoff, not a numbered list.
-- Make factual claims precise; never invent numbers, quotations, or unsupported superlatives. Follow user instructions and exclusions.
-- Keep each scene 1-2 short sentences (about 3-6 seconds spoken) so visuals can follow the narration closely.
-- Each scene must have a SPECIFIC visual subject matching exactly what is spoken at that moment. Provide 3 concrete English stock-search phrases ordered most relevant first: named subject and visible action/object, not vague scenery. Search stock for real footage; do not request AI artwork.
+- Never invent numbers, quotations, or unsupported superlatives.
+- Keep each scene 1-2 short sentences (about 3-6 seconds spoken).
+- Each scene must have a SPECIFIC visual subject matching exactly what is spoken. Provide 3 concrete English stock-search phrases, most relevant first.
 - VOICE-READY TEXT (read aloud by ElevenLabs TTS, so write exactly what is spoken):
-  * Write EVERY number as spoken words in the narration language, the way a presenter says it: English "three hundred eighty-four thousand kilometres"; Hindi/Hinglish "तीन लाख चौरासी हज़ार किलोमीटर"; Bengali in Bengali words. Never use digits in narration.
-  * Round big or awkward numbers naturally ("लगभग चार लाख किलोमीटर", "about four billion years"); at most one number per sentence, and put a comma before a big number so it lands with emphasis.
-  * Years as spoken: "nineteen sixty-nine" / "उन्नीस सौ उनहत्तर". Decimals and fractions in words ("साढ़े तीन", "one point six").
-  * No symbols or abbreviations: write percent/प्रतिशत, degree Celsius/डिग्री सेल्सियस, kilometre/किलोमीटर, NASA stays NASA. No %, °, km, kg, ~, /, &, +, x, brackets, quotes, emoji, hashtags or ellipses.
-  * Short, clear sentences (max about 14 words), simple word order, no tongue-twisters, no stacked clauses. End every sentence with . ? or ! (Hindi may use ।).
-  * Hinglish: Hindi words only in Devanagari and English words only in Latin script; never transliterate English words into Devanagari or Hindi words into Latin.
-- Keep badge and headline optional and brief; headline 1-3 words, not narration repeated. Captions will follow word timing.
+  * Write EVERY number as spoken words in the narration language (English "three hundred eighty-four thousand kilometres"; Hindi/Hinglish "तीन लाख चौरासी हज़ार किलोमीटर"; Bengali in Bengali words). Never digits in narration.
+  * Round big numbers naturally; at most one number per sentence, comma before a big number.
+  * Years as spoken. Decimals in words.
+  * No symbols or abbreviations (%, °, km, kg, ~, /, &, +, brackets, quotes, emoji, hashtags, ellipses). NASA stays NASA.
+  * Short sentences (max about 14 words). End every sentence with . ? or ! (Hindi may use ।).
+  * Hinglish: Hindi words only in Devanagari and English words only in Latin script.
+- Badge and headline optional and brief; headline 1-3 words.
 
 Return JSON:
 {{"title": "short title in {cfg['language']}",
   "format": "list" | "explainer",
-  "scenes": [{{"narration": "...", "badge": "short fact number or empty", "headline": "1-3 word label or empty",
-              "keywords": ["specific English visual stock query (2-4 words)", "alternative specific query", "broader but still on-topic query"],
+  "hooks": [{{"text": "...", "type": "...", "score": 0}}],
+  "hook": {{"text": "...", "type": "..."}},
+  "visual_bible": {{"grade": "...", "mood": "..."}},
+  "scenes": [{{"purpose": "hook|context|fact|reveal|payoff", "narration": "...", "claim": "the factual claim in English or empty",
+              "sources": ["S1"], "badge": "short fact number or empty", "headline": "1-3 word label or empty",
+              "shot_type": "...", "keywords": ["specific English stock query", "alternative", "broader on-topic query"],
+              "infographic": null, "sfx": "", "music_intensity": "medium",
               "emphasis": ["1-3 key words/numbers from the narration to highlight"]}}]}}
 """
     key = os.environ.get("NVIDIA_API_KEY", "")
@@ -195,7 +223,7 @@ Return JSON:
                     json={
                         "model": model,
                         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                        "temperature": 0.6,
+                        "temperature": temp,
                         "max_tokens": 16000,
                     },
                     timeout=300,
@@ -782,9 +810,14 @@ def scene_filter(t: dict, i: int, dur: float, W: int, H: int, fps: int, kind: st
     return ",".join(parts)
 
 
+GRADE = {"vf": ""}
+
+
 def render_scene(asset, t, i, dur, W, H, fps) -> Path:
     out = WORK / f"scene_{i:02d}.mp4"
     vf = scene_filter(t, i, dur, W, H, fps, asset["kind"])
+    if GRADE["vf"]:
+        vf = f"{vf},{GRADE['vf']},format=yuv420p"
     if asset["kind"] == "image":
         inp = ["-loop", "1", "-i", str(asset["path"])]
     else:
@@ -907,11 +940,38 @@ def main():
              "transitions": {"fade": 0.08}, "overlay": {"badge": True, "headline": False},
              "captions": {"words_per_line": 2}}
 
+    if cfg["pacing"] == "fast":
+        t["voice_rate"] = "+28%"
+    elif cfg["pacing"] == "relaxed":
+        t["voice_rate"] = "+12%"
+    cut_len = {"fast": 1.8, "relaxed": 3.0}.get(cfg["pacing"], 2.2)
+
     print(json.dumps({k: v for k, v in cfg.items() if k not in ("user_id",)}, ensure_ascii=False, indent=1))
     try:
-        update_row(vid, status="processing", step="Writing the script", progress=8)
-        script = write_script(cfg)
+        update_row(vid, status="processing", step="Researching the topic", progress=4)
+        sources = director.research(cfg)
+        update_row(vid, sources=[{"id": s["id"], "url": s["url"], "title": s["title"]} for s in sources])
+
+        update_row(vid, step="Writing the story & storyboard", progress=8)
+        script = write_script(cfg, director.sources_digest(sources))
         scenes = script["scenes"]
+        verification = director.verify_claims(script, sources)
+
+        update_row(vid, step="Director review of the script", progress=12)
+        review = director.critique_script(script, cfg, verification)
+        for fx in review.get("rewrites") or []:
+            try:
+                k = int(fx.get("i"))
+                if 0 <= k < len(scenes) and str(fx.get("narration", "")).strip():
+                    scenes[k]["narration"] = str(fx["narration"]).strip()
+                    if scenes[k].get("verification") == "unverified":
+                        scenes[k]["verification"] = "softened"
+                        verification[k]["status"] = "softened"
+            except (TypeError, ValueError):
+                continue
+        print("[director] script score:", review.get("score"), review.get("issues"))
+        visuals.enforce_shot_variety(scenes)
+        GRADE["vf"] = visuals.grade_filter(script.get("visual_bible"))
         title = script.get("title") or cfg["prompt"][:60]
         update_row(vid, step=f"Script ready: {len(scenes)} scenes", progress=18, title=title)
 
@@ -924,46 +984,120 @@ def main():
             update_row(vid, step=f"Voiceover {i + 1}/{len(scenes)}", progress=18 + int(22 * i / len(scenes)))
             a = WORK / f"voice_{i:02d}.mp3"
             ctx = {"prev": scenes[i - 1]["narration"] if i else "", "next": scenes[i + 1]["narration"] if i + 1 < len(scenes) else ""}
-            words = tts(sc["narration"], cfg, a, rate, ctx)
-            # Frame-exact scene length so picture cuts and voice cuts land on the same frame.
+            words = tts(director.pronounce(sc["narration"], cfg), cfg, a, rate, ctx)
+            words = director.restore_display(words, cfg)
             d = math.ceil((probe_duration(a) + float(t.get("scene_gap", 0.2))) * fps) / fps
             audio_parts.append((a, d))
             timeline.append({"start": cursor, "end": cursor + d, "dur": d, "words": words,
                              "badge": sc.get("badge", ""), "headline": sc.get("headline", ""),
                              "emphasis": [str(e) for e in (sc.get("emphasis") or [])][:3],
-                             "keywords": sc.get("keywords") or [cfg["prompt"]]})
+                             "keywords": sc.get("keywords") or [cfg["prompt"]],
+                             "purpose": sc.get("purpose", ""), "shot_type": sc.get("shot_type", ""),
+                             "infographic": sc.get("infographic") if isinstance(sc.get("infographic"), dict) else None,
+                             "sfx": sc.get("sfx", ""), "music_intensity": sc.get("music_intensity", "medium"),
+                             "narration": sc["narration"]})
             cursor += d
 
-        clips = []
-        last_asset = None
-        for i, sc in enumerate(timeline):
-            update_row(vid, step=f"Stock footage & editing {i + 1}/{len(timeline)}", progress=40 + int(35 * i / len(timeline)))
-            # Cut within longer narration scenes, keeping footage tied to this fact.
-            nframes = round(sc["dur"] * fps)
-            segments = max(1, math.ceil(sc["dur"] / 2.2)) if t.get("fact_style") else 1
-            cuts = [round(nframes * k / segments) for k in range(segments + 1)]
-            queries = [str(k) for k in sc["keywords"] if str(k).strip()][:3]
-            for j in range(segments):
-                ordered = queries[j % len(queries):] + queries[:j % len(queries)] if queries else [cfg["prompt"]]
-                asset = fetch_asset(ordered, cfg, len(clips))
-                if not asset and j == 0:
-                    asset = fetch_asset([cfg["prompt"]] + queries[-1:], cfg, len(clips))
+        def pick(queries, shot, narration, prev_hash):
+            """Stock candidate that is relevant (vision) and not a repeat (dHash)."""
+            best = None
+            for attempt in range(3):
+                qs = [visuals.shape_query(q, shot) if attempt == 0 else q for q in queries]
+                asset = fetch_asset(qs, cfg, len(clips) * 10 + attempt)
                 if not asset:
-                    if last_asset is not None:
-                        # Hold the previous on-topic clip longer instead of inserting filler.
-                        clips.append(render_scene(last_asset, t, len(clips), (cuts[j + 1] - cuts[j]) / fps, W, H, fps))
-                        continue
-                    raise RuntimeError(f"No relevant stock media found for scene {i + 1}; try a more visually searchable topic")
-                last_asset = asset
-                clips.append(render_scene(asset, t, len(clips), (cuts[j + 1] - cuts[j]) / fps, W, H, fps))
+                    break
+                h = visuals.dhash(asset["path"], asset["kind"])
+                sim = visuals.similarity(h, prev_hash)
+                b64 = visuals.jpeg_b64(asset["path"], asset["kind"])
+                score = director.vision_score(b64, narration, queries[0]) if b64 else None
+                asset.update(hash=h, sim=sim, score=score, query=qs[0])
+                ok = sim < 0.9 and (score is None or score >= 0.45)
+                if best is None or (ok and not best.get("_ok")) or ((score or 0.5) - sim > (best.get("score") or 0.5) - best["sim"]):
+                    best = {**asset, "_ok": ok}
+                if ok:
+                    break
+                print(f"[visual] rejected '{qs[0]}' (sim {sim:.2f}, relevance {score})")
+            return best
 
-        update_row(vid, step="Mixing voice and music", progress=78)
+        def build_scene_clips(i, sc, prev_hash, override=None):
+            nframes = round(sc["dur"] * fps)
+            info = (override or {}).get("infographic") or sc["infographic"]
+            if info:
+                bg = pick(sc["keywords"][:2], sc["shot_type"], sc["narration"], None)
+                out = WORK / f"info_{i:02d}.mp4"
+                visuals.render_infographic(info, nframes / fps, W, H, fps, out, WORK,
+                                           background=bg["path"] if bg else None, bg_kind=bg["kind"] if bg else "video")
+                return [out], [{"type": "infographic", "title": info.get("title", "")}], prev_hash
+            segments = max(1, math.ceil(sc["dur"] / cut_len)) if t.get("fact_style") else 1
+            cuts = [round(nframes * k / segments) for k in range(segments + 1)]
+            queries = [str(k) for k in ((override or {}).get("queries") or sc["keywords"]) if str(k).strip()][:3] or [cfg["prompt"]]
+            out, meta, last = [], [], None
+            for j in range(segments):
+                ordered = queries[j % len(queries):] + queries[:j % len(queries)]
+                asset = pick(ordered, sc["shot_type"], sc["narration"], prev_hash)
+                if not asset and j == 0:
+                    asset = pick([cfg["prompt"]] + queries[-1:], "", sc["narration"], prev_hash)
+                if not asset:
+                    if last is not None:
+                        asset = last
+                    else:
+                        fb = {"type": "stat", "title": sc.get("headline") or title,
+                              "items": [{"label": "", "value": sc.get("badge") or "", "unit": ""}]}
+                        o = WORK / f"info_{i:02d}_{j}.mp4"
+                        visuals.render_infographic(fb, (cuts[-1] - cuts[j]) / fps, W, H, fps, o, WORK)
+                        out.append(o)
+                        meta.append({"type": "infographic-fallback"})
+                        break
+                last = asset
+                prev_hash = asset.get("hash") or prev_hash
+                sims.append(asset.get("sim", 0.0))
+                out.append(render_scene(asset, t, len(clips) + len(out), (cuts[j + 1] - cuts[j]) / fps, W, H, fps))
+                meta.append({"type": asset["kind"], "query": asset.get("query"), "relevance": asset.get("score"),
+                             "similarity": round(asset.get("sim", 0.0), 2)})
+            return out, meta, prev_hash
+
+        clips, sims, scene_clips, scene_meta, prev_hash = [], [], [], [], None
+        for i, sc in enumerate(timeline):
+            update_row(vid, step=f"Visuals & editing {i + 1}/{len(timeline)}", progress=40 + int(30 * i / len(timeline)))
+            for attempt in range(2):  # scene-level retry: a failed scene never fails the whole render
+                try:
+                    c, m, prev_hash = build_scene_clips(i, sc, prev_hash)
+                    break
+                except Exception as e:
+                    print(f"[scene {i}] attempt {attempt + 1} failed:", e)
+                    if attempt:
+                        raise
+            scene_clips.append(c)
+            scene_meta.append(m)
+            clips.extend(c)
+
+        # Critic pass 2: fix weak/repeated visuals.
+        update_row(vid, step="Director review of the edit", progress=72)
+        summary = [{"i": i, "narration": sc["narration"], "footage": [m.get("query") or m.get("type") for m in scene_meta[i]],
+                    "relevance": [m.get("relevance") for m in scene_meta[i]], "similarity": [m.get("similarity") for m in scene_meta[i]],
+                    "shot": sc["shot_type"], "dur": round(sc["dur"], 2)} for i, sc in enumerate(timeline)]
+        edit_review = director.critique_edit(summary, cfg)
+        for fx in (edit_review.get("fixes") or [])[:3]:
+            try:
+                k = int(fx.get("i"))
+                if not 0 <= k < len(timeline):
+                    continue
+                ov = ({"infographic": timeline[k]["infographic"] or {"type": "stat", "title": timeline[k].get("headline") or title,
+                                                                    "items": []}} if fx.get("action") == "infographic"
+                      else {"queries": [fx.get("query")] + timeline[k]["keywords"][:2]})
+                c, m, _ = build_scene_clips(k, timeline[k], None, ov)
+                scene_clips[k], scene_meta[k] = c, m
+                print(f"[critic] rebuilt scene {k}: {fx}")
+            except Exception as e:
+                print("[critic] fix skipped:", e)
+        clips = [c for group in scene_clips for c in group]
+
+        update_row(vid, step="Mixing voice, music & sound design", progress=78)
         concat = WORK / "concat.txt"
         concat.write_text("".join(f"file '{c}'\n" for c in clips))
         video = WORK / "video.mp4"
         run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(video)])
 
-        # Narration track with per-scene padding.
         inputs, filt = [], []
         for i, (a, d) in enumerate(audio_parts):
             inputs += ["-i", str(a)]
@@ -973,16 +1107,14 @@ def main():
         run(["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filt), "-map", "[narr]", str(narr)])
 
         total = cursor
-        music = download_music(cfg)
+        music = download_music(cfg) if cfg["music_level"] != "off" else None
         mixed = WORK / "mix.m4a"
-        if music:
-            vol = float(t.get("music_volume", 0.18))
-            run(["ffmpeg", "-y", "-i", str(narr), "-stream_loop", "-1", "-i", str(music), "-filter_complex",
-                 f"[1:a]aresample=44100,volume={vol},atrim=0:{total:.3f},afade=t=in:st=0:d=1.2,afade=t=out:st={max(0, total - 1.8):.3f}:d=1.8[m];"
-                 f"[m][0:a]sidechaincompress=threshold=0.05:ratio=6:attack=20:release=300[duck];"
-                 f"[0:a][duck]amix=inputs=2:duration=first:normalize=0[out]",
-                 "-map", "[out]", "-c:a", "aac", "-b:a", "192k", str(mixed)])
-        else:
+        sfx = sound.prepare_sfx(WORK, drive_token) if cfg["sfx_level"] != "off" else {}
+        cues = sound.plan_cues(timeline, cfg["sfx_level"])
+        try:
+            sound.mix(narr, total, mixed, music, cfg["music_level"], sfx, cues, cfg["sfx_level"], timeline)
+        except Exception as e:
+            print("[sound] advanced mix failed, plain mix:", e)
             run(["ffmpeg", "-y", "-i", str(narr), "-c:a", "aac", "-b:a", "192k", str(mixed)])
 
         update_row(vid, step="Captions, overlays & final render", progress=85)
@@ -993,6 +1125,18 @@ def main():
              "-profile:v", "high", "-level", "4.2", "-pix_fmt", "yuv420p", "-r", str(fps), "-b:v", f"{cfg['bitrate_mbps']}M", "-minrate", f"{cfg['bitrate_mbps']}M", "-maxrate", f"{cfg['bitrate_mbps']}M", "-bufsize", f"{cfg['bitrate_mbps']*2}M", "-x264-params", "nal-hrd=cbr", "-c:a", "aac", "-b:a", "192k", "-shortest",
              "-movflags", "+faststart", str(final)])
 
+        update_row(vid, step="Quality check", progress=90)
+        report = qa.check(final, cfg, W, H, fps, total, sims, verification)
+        report["director"] = {"hook": script.get("hook"), "script_score": review.get("score"),
+                              "edit_score": edit_review.get("score"), "issues": (review.get("issues") or []) + (edit_review.get("issues") or [])}
+        scene_rows = [{"i": i, "start": round(sc["start"], 2), "end": round(sc["end"], 2), "purpose": sc["purpose"],
+                       "narration": sc["narration"], "shot_type": sc["shot_type"], "clips": scene_meta[i],
+                       "verification": verification[i]["status"] if i < len(verification) else "no-claim",
+                       "sources": verification[i]["sources"] if i < len(verification) else []} for i, sc in enumerate(timeline)]
+        print("[qa]", json.dumps(report, ensure_ascii=False))
+        update_row(vid, qa_report=report, scenes=scene_rows)
+        if not report["passed"]:
+            raise RuntimeError("Quality check failed: " + "; ".join(report["issues"]))
         (WORK / "result.json").write_text(json.dumps({"path": str(final), "title": title}), encoding="utf-8")
         update_row(vid, step="Rendered, uploading to Google Drive", progress=92, title=title)
         print("[reel] rendered:", final, round(final.stat().st_size / 1e6, 2), "MB")
