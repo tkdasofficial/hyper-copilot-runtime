@@ -326,12 +326,13 @@ def trim_voice(out: Path, words: list) -> list:
         return words
     duration = probe_duration(out)
     start = max(0.0, words[0][0] - 0.055)
-    end = min(duration, words[-1][0] + words[-1][1] + 0.105)
-    if start < 0.045 and duration - end < 0.18:
-        return words
-    trimmed = out.with_name(out.stem + "_trim.mp3")
-    run(["ffmpeg", "-y", "-i", str(out), "-ss", f"{start:.3f}", "-t", f"{max(0.15, end-start):.3f}",
-         "-c:a", "libmp3lame", "-q:a", "2", str(trimmed)])
+    end = min(duration, words[-1][0] + words[-1][1] + 0.06)
+    length = max(0.15, end - start)
+    # Lossless sample-exact cut (mp3 re-encode adds padding that bleeds into the next scene) + tiny fades.
+    trimmed = out.with_name(out.stem + "_trim.wav")
+    run(["ffmpeg", "-y", "-i", str(out), "-ss", f"{start:.3f}", "-t", f"{length:.3f}",
+         "-af", f"afade=t=in:st=0:d=0.012,afade=t=out:st={max(0, length-0.04):.3f}:d=0.04",
+         "-ar", "44100", "-ac", "1", "-c:a", "pcm_s16le", str(trimmed)])
     trimmed.replace(out)
     return [(max(0.0, ws-start), wd, text) for ws, wd, text in words]
 
@@ -397,7 +398,7 @@ def el_voice(cfg):
 
 def el_settings(cfg, rate: str):
     cat = str(cfg.get("category", "")).lower()
-    speed = max(0.9, min(1.1, 1.0 + _pct(rate) / 220))
+    speed = max(0.9, min(1.2, 1.0 + _pct(rate) / 150))
     if any(k in cat for k in ("story", "mystery", "horror", "motivation")):
         return {"stability": 0.38, "similarity_boost": 0.8, "style": 0.55, "use_speaker_boost": True, "speed": speed}
     if any(k in cat for k in ("news", "fact", "comedy", "entertainment", "tech")):
@@ -788,7 +789,7 @@ def render_scene(asset, t, i, dur, W, H, fps) -> Path:
         inp = ["-loop", "1", "-i", str(asset["path"])]
     else:
         inp = ["-stream_loop", "-1", "-i", str(asset["path"])]
-    run(["ffmpeg", "-y", *inp, "-t", f"{dur:.3f}", "-vf", vf, "-an", "-r", str(fps),
+    run(["ffmpeg", "-y", *inp, "-frames:v", str(max(1, round(dur * fps))), "-vf", vf, "-an", "-r", str(fps),
          "-c:v", "libx264", "-preset", "fast", "-crf", "17", "-pix_fmt", "yuv420p", str(out)])
     return out
 
@@ -900,7 +901,7 @@ def main():
     fps = cfg["fps"]
     t = load_template(cfg["template"])
     if "news" in str(cfg["category"]).lower() or "fact" in str(cfg["category"]).lower():
-        t = {**t, "fact_style": True, "voice_rate": "+22%", "scene_gap": 0.05,
+        t = {**t, "fact_style": True, "voice_rate": "+24%", "scene_gap": 0.0,
              "music_volume": 0.09, "speed": {"factor": 1.0},
              "zoom": {"pattern": ["in", "out", "pan_right"], "amount": 0.07},
              "transitions": {"fade": 0.08}, "overlay": {"badge": True, "headline": False},
@@ -924,7 +925,8 @@ def main():
             a = WORK / f"voice_{i:02d}.mp3"
             ctx = {"prev": scenes[i - 1]["narration"] if i else "", "next": scenes[i + 1]["narration"] if i + 1 < len(scenes) else ""}
             words = tts(sc["narration"], cfg, a, rate, ctx)
-            d = probe_duration(a) + float(t.get("scene_gap", 0.2))
+            # Frame-exact scene length so picture cuts and voice cuts land on the same frame.
+            d = math.ceil((probe_duration(a) + float(t.get("scene_gap", 0.2))) * fps) / fps
             audio_parts.append((a, d))
             timeline.append({"start": cursor, "end": cursor + d, "dur": d, "words": words,
                              "badge": sc.get("badge", ""), "headline": sc.get("headline", ""),
@@ -937,8 +939,9 @@ def main():
         for i, sc in enumerate(timeline):
             update_row(vid, step=f"Stock footage & editing {i + 1}/{len(timeline)}", progress=40 + int(35 * i / len(timeline)))
             # Cut within longer narration scenes, keeping footage tied to this fact.
-            segments = max(1, math.ceil(sc["dur"] / 3.0)) if t.get("fact_style") else 1
-            clip_len = sc["dur"] / segments
+            nframes = round(sc["dur"] * fps)
+            segments = max(1, math.ceil(sc["dur"] / 2.2)) if t.get("fact_style") else 1
+            cuts = [round(nframes * k / segments) for k in range(segments + 1)]
             queries = [str(k) for k in sc["keywords"] if str(k).strip()][:3]
             for j in range(segments):
                 ordered = queries[j % len(queries):] + queries[:j % len(queries)] if queries else [cfg["prompt"]]
@@ -948,11 +951,11 @@ def main():
                 if not asset:
                     if last_asset is not None:
                         # Hold the previous on-topic clip longer instead of inserting filler.
-                        clips.append(render_scene(last_asset, t, len(clips), clip_len, W, H, fps))
+                        clips.append(render_scene(last_asset, t, len(clips), (cuts[j + 1] - cuts[j]) / fps, W, H, fps))
                         continue
                     raise RuntimeError(f"No relevant stock media found for scene {i + 1}; try a more visually searchable topic")
                 last_asset = asset
-                clips.append(render_scene(asset, t, len(clips), clip_len, W, H, fps))
+                clips.append(render_scene(asset, t, len(clips), (cuts[j + 1] - cuts[j]) / fps, W, H, fps))
 
         update_row(vid, step="Mixing voice and music", progress=78)
         concat = WORK / "concat.txt"
@@ -964,7 +967,7 @@ def main():
         inputs, filt = [], []
         for i, (a, d) in enumerate(audio_parts):
             inputs += ["-i", str(a)]
-            filt.append(f"[{i}:a]aresample=44100,apad,atrim=0:{d:.3f}[a{i}]")
+            filt.append(f"[{i}:a]aresample=44100,apad,atrim=end_sample={round(d * 44100)}[a{i}]")
         filt.append("".join(f"[a{i}]" for i in range(len(audio_parts))) + f"concat=n={len(audio_parts)}:v=0:a=1[narr]")
         narr = WORK / "narration.wav"
         run(["ffmpeg", "-y", *inputs, "-filter_complex", ";".join(filt), "-map", "[narr]", str(narr)])
