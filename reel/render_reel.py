@@ -1441,6 +1441,24 @@ def main():
         update_row(vid, step="Quality check", progress=90)
         sims = [s["asset"].get("sim") or 0.0 for i in sorted(planner.plans) for s in planner.plans[i].get("segments", [])]
         report = qa.check(final, cfg, W, H, fps, total, sims, verification)
+        repaired = []
+        for _pass in range(2):  # self-repair: re-shoot only the scenes QA flagged, then re-check (never waive the check)
+            bad_t = [float(x) for iss in report["issues"] if iss.startswith("black frames")
+                     for x in re.findall(r"[\d.]+", iss.split(" at ", 1)[1])]
+            bad = sorted({k for tt in bad_t for k, sc in enumerate(timeline) if sc["start"] - 0.05 <= tt < sc["end"]})
+            if not bad or [x for x in report["issues"] if not x.startswith("black frames")]:
+                break
+            for k in bad:
+                old_ids = tuple(sg["asset"]["id"] for sg in planner.plans[k].get("segments", []) if sg.get("asset"))
+                print(f"[qa-repair] scene {k + 1} has black frames; replacing {old_ids}")
+                planner.plan(k, timeline[k], {"queries": timeline[k]["keywords"]}, exclude=old_ids)
+                rendered[k] = planner.render(k)
+                repaired.append(k + 1)
+            _concat([c for i in range(len(timeline)) for c in rendered[i]], video)
+            _encode_final(cfg, fps, video, mixed, ass, final)
+            sims = [s["asset"].get("sim") or 0.0 for i in sorted(planner.plans) for s in planner.plans[i].get("segments", [])]
+            report = qa.check(final, cfg, W, H, fps, total, sims, verification)
+        report["repaired_scenes"] = repaired
         post = hard_checks(timeline, planner, fps)
         report["warnings"] = list(dict.fromkeys(report["warnings"] + post))
         report["director"] = {"hook": script.get("hook"), "script_score": review.get("score"),
