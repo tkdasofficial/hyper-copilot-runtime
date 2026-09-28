@@ -31,7 +31,11 @@ jobs:
   render-reel:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
     env:
+      GITHUB_TOKEN: ${{ github.token }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -102,6 +106,16 @@ jobs:
 
       - name: Render Reel (script, stock footage, voice, music, edit)
         run: python reel/render_reel.py
+
+      - name: Save project for scene retries (Redo shot)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reel-project-${{ env.VIDEO_ID }}
+          path: /tmp/reel_work/project
+          retention-days: 30
+          overwrite: true
+          if-no-files-found: warn
 
       - name: Upload Video to Google Drive (Videos folder)
         run: python reel/render_reel.py --upload
