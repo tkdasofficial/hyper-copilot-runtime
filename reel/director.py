@@ -62,7 +62,7 @@ def vision_score(image_b64: str, narration: str, subject: str):
                                     "messages": [{"role": "user", "content": [
                                         {"type": "text", "text": prompt},
                                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}]}]},
-                              timeout=60)
+                              timeout=25)
             if r.status_code in (400, 404, 422):
                 _VISION_DEAD.add(model)
                 print(f"[director] vision model {model} unavailable ({r.status_code})")
