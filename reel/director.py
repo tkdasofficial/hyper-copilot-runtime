@@ -45,10 +45,42 @@ def llm_json(system: str, user: str, temperature=0.5, retries=3, timeout=300) ->
 
 VISION_STATE = {"model": None, "dead": set(), "fails": 0, "disabled": False, "calls": 0}
 VISION_MODELS = ["meta/llama-4-maverick-17b-128e-instruct", "meta/llama-3.2-90b-vision-instruct",
-                 "microsoft/phi-4-multimodal-instruct", "meta/llama-3.2-11b-vision-instruct"]
+                 "microsoft/phi-4-multimodal-instruct", "meta/llama-3.2-11b-vision-instruct",
+                 "@cf/meta/llama-3.2-11b-vision-instruct", "@cf/llava-hf/llava-1.5-7b-hf"]
+_CF_AGREED = set()
+
+
+def _parse_score(text):
+    m = re.search(r"\"?score\"?\s*[:=]\s*(\d+(?:\.\d+)?)", text) or re.search(r"\b(\d+(?:\.\d+)?)\s*/\s*10", text)
+    if not m:
+        raise ValueError("no score in reply: " + text[:80])
+    return max(0.0, min(1.0, float(m.group(1)) / 10))
+
+
+def _cf_vision(model, image_b64, prompt, timeout):
+    """Cloudflare Workers AI vision fallback (independent of NVIDIA availability)."""
+    acc, tok = os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""), os.environ.get("CLOUDFLARE_API_TOKEN", "")
+    if not acc or not tok:
+        raise LookupError("cloudflare not configured")
+    url = f"https://api.cloudflare.com/client/v4/accounts/{acc}/ai/run/{model}"
+    h = {"Authorization": f"Bearer {tok}"}
+    if "llama-3.2" in model and model not in _CF_AGREED:  # one-time Meta license acceptance required by Workers AI
+        requests.post(url, headers=h, json={"prompt": "agree"}, timeout=timeout)
+        _CF_AGREED.add(model)
+    import base64 as _b
+    body = ({"image": list(_b.b64decode(image_b64)), "prompt": prompt, "max_tokens": 120} if "llava" in model else
+            {"messages": [{"role": "user", "content": prompt}], "image": list(_b.b64decode(image_b64)), "max_tokens": 120})
+    r = requests.post(url, headers=h, json=body, timeout=timeout)
+    if r.status_code in (400, 401, 403, 404, 422):
+        raise LookupError(f"{r.status_code} {r.text[:120]}")
+    r.raise_for_status()
+    res = r.json().get("result") or {}
+    return _parse_score(res.get("response") or res.get("description") or "")
 
 
 def _vision_call(model, image_b64, prompt, timeout):
+    if model.startswith("@cf/"):
+        return _cf_vision(model, image_b64, prompt, timeout)
     key = os.environ.get("NVIDIA_API_KEY", "")
     r = requests.post(NIM_URL, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                       json={"model": model, "temperature": 0.1, "max_tokens": 120,
@@ -59,18 +91,14 @@ def _vision_call(model, image_b64, prompt, timeout):
     if r.status_code in (400, 401, 403, 404, 422):
         raise LookupError(f"{r.status_code}")
     r.raise_for_status()
-    text = r.json()["choices"][0]["message"].get("content") or ""
-    m = re.search(r"\"?score\"?\s*[:=]\s*(\d+(?:\.\d+)?)", text) or re.search(r"\b(\d+(?:\.\d+)?)\s*/\s*10", text)
-    if not m:
-        raise ValueError("no score in reply: " + text[:80])
-    return max(0.0, min(1.0, float(m.group(1)) / 10))
+    return _parse_score(r.json()["choices"][0]["message"].get("content") or "")
 
 
 def vision_ready(sample_b64: str) -> bool:
     """Pick the first vision model that answers quickly; disable vision for the render if none does."""
     if VISION_STATE["model"] or VISION_STATE["disabled"]:
         return bool(VISION_STATE["model"])
-    for model in VISION_MODELS:
+    for model in [m for m in VISION_MODELS if m not in VISION_STATE["dead"]]:
         t0 = time.time()
         try:
             _vision_call(model, sample_b64, 'Is this an image? Reply JSON {"score": 10}', 30)
@@ -78,6 +106,7 @@ def vision_ready(sample_b64: str) -> bool:
             print(f"[vision] using {model} ({time.time() - t0:.1f}s probe)")
             return True
         except Exception as e:
+            VISION_STATE["dead"].add(model)
             print(f"[vision] {model} unavailable: {str(e)[:100]}")
     VISION_STATE["disabled"] = True
     print("[vision] no vision model available: relevance falls back to stock labels")
@@ -101,10 +130,12 @@ def vision_score(image_b64: str, subject: str, claim: str = ""):
         except Exception as e:
             VISION_STATE["fails"] += 1
             print("[vision] check failed:", str(e)[:100])
-            if VISION_STATE["fails"] >= 6:  # circuit breaker: never let a dead model stall the render
-                VISION_STATE["disabled"] = True
-                print("[vision] disabled after repeated failures")
-                return None
+            if VISION_STATE["fails"] >= 4:  # circuit breaker: switch model, never let a dead model stall the render
+                VISION_STATE["dead"].add(VISION_STATE["model"])
+                print(f"[vision] {VISION_STATE['model']} dropped after repeated failures")
+                VISION_STATE.update(model=None, fails=0)
+                if not vision_ready(image_b64):
+                    return None
     return None
 
 
