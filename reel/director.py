@@ -138,7 +138,7 @@ def vision_score(image_b64: str, subject: str, claim: str = ""):
             return None
         try:
             VISION_STATE["calls"] += 1
-            v = _vision_call(VISION_STATE["model"], image_b64, prompt, 20)
+            v = _vision_call(VISION_STATE["model"], image_b64, prompt, 35)
             VISION_STATE["fails"] = 0
             return v
         except Exception as e:
