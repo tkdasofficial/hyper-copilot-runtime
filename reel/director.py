@@ -11,7 +11,6 @@ import requests
 
 NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 TEXT_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b"]
-VISION_MODELS = ["meta/llama-3.2-90b-vision-instruct", "meta/llama-3.2-11b-vision-instruct"]
 UA = {"User-Agent": "HyperCopilotReel/3.0 (research bot; contact via github.com/tkdasofficial)"}
 AUTHORITY = ("nasa.gov", "esa.int", "noaa.gov", "nih.gov", "who.int", ".gov", ".edu", ".ac.", "isro.gov.in",
              "britannica.com", "nationalgeographic.com", "nature.com", "science.org", "si.edu", "wikipedia.org")
@@ -44,37 +43,68 @@ def llm_json(system: str, user: str, temperature=0.5, retries=3, timeout=300) ->
     raise RuntimeError(f"AI request failed: {last}")
 
 
-_VISION_DEAD: set = set()
+VISION_STATE = {"model": None, "dead": set(), "fails": 0, "disabled": False, "calls": 0}
+VISION_MODELS = ["meta/llama-4-maverick-17b-128e-instruct", "meta/llama-3.2-90b-vision-instruct",
+                 "microsoft/phi-4-multimodal-instruct", "meta/llama-3.2-11b-vision-instruct"]
 
 
-def vision_score(image_b64: str, narration: str, subject: str):
-    """0..1 relevance of a frame to the narration; None when no vision model answers."""
+def _vision_call(model, image_b64, prompt, timeout):
     key = os.environ.get("NVIDIA_API_KEY", "")
-    prompt = (f"Narration: \"{narration}\"\nIntended visual: {subject}\n"
-              "Does this frame visually support the narration? Also penalise anything that contradicts it "
-              "(wrong planet, wrong object, wrong place). Reply with JSON only: {\"score\": 0-10, \"why\": \"...\"}")
+    r = requests.post(NIM_URL, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                      json={"model": model, "temperature": 0.1, "max_tokens": 120,
+                            "messages": [{"role": "user", "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}]}]},
+                      timeout=timeout)
+    if r.status_code in (400, 401, 403, 404, 422):
+        raise LookupError(f"{r.status_code}")
+    r.raise_for_status()
+    text = r.json()["choices"][0]["message"].get("content") or ""
+    m = re.search(r"\"?score\"?\s*[:=]\s*(\d+(?:\.\d+)?)", text) or re.search(r"\b(\d+(?:\.\d+)?)\s*/\s*10", text)
+    if not m:
+        raise ValueError("no score in reply: " + text[:80])
+    return max(0.0, min(1.0, float(m.group(1)) / 10))
+
+
+def vision_ready(sample_b64: str) -> bool:
+    """Pick the first vision model that answers quickly; disable vision for the render if none does."""
+    if VISION_STATE["model"] or VISION_STATE["disabled"]:
+        return bool(VISION_STATE["model"])
     for model in VISION_MODELS:
-        if model in _VISION_DEAD:
-            continue
+        t0 = time.time()
         try:
-            r = requests.post(NIM_URL, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                              json={"model": model, "temperature": 0.1, "max_tokens": 200,
-                                    "messages": [{"role": "user", "content": [
-                                        {"type": "text", "text": prompt},
-                                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}]}]},
-                              timeout=25)
-            if r.status_code in (400, 404, 422):
-                _VISION_DEAD.add(model)
-                print(f"[director] vision model {model} unavailable ({r.status_code})")
-                continue
-            if not r.ok:
-                continue
-            text = r.json()["choices"][0]["message"].get("content") or ""
-            m = re.search(r"\"?score\"?\s*[:=]\s*(\d+(?:\.\d+)?)", text) or re.search(r"\b(\d+(?:\.\d+)?)\s*/\s*10", text)
-            if m:
-                return max(0.0, min(1.0, float(m.group(1)) / 10))
+            _vision_call(model, sample_b64, 'Is this an image? Reply JSON {"score": 10}', 30)
+            VISION_STATE["model"] = model
+            print(f"[vision] using {model} ({time.time() - t0:.1f}s probe)")
+            return True
         except Exception as e:
-            print("[director] vision check failed:", str(e)[:120])
+            print(f"[vision] {model} unavailable: {str(e)[:100]}")
+    VISION_STATE["disabled"] = True
+    print("[vision] no vision model available: relevance falls back to stock labels")
+    return False
+
+
+def vision_score(image_b64: str, subject: str, claim: str = ""):
+    """0..1: does this frame show what the narrator is talking about? None when vision is unavailable."""
+    if not image_b64 or VISION_STATE["disabled"] or not vision_ready(image_b64):
+        return None
+    prompt = (f"A short documentary scene is about: {subject}.\n" + (f"The narrator says (English gist): {claim}\n" if claim else "") +
+              "Score how well THIS image shows that exact subject, 0-10. 9-10: clearly the exact subject. 6-8: the subject, "
+              "loosely framed. 3-5: generic/related mood only. 0-2: unrelated or contradicting (wrong planet, wrong object, "
+              "people/office when the topic is astronomy, text-heavy thumbnails). Reply JSON only: {\"score\": n, \"why\": \"...\"}")
+    for attempt in range(2):
+        try:
+            VISION_STATE["calls"] += 1
+            v = _vision_call(VISION_STATE["model"], image_b64, prompt, 20)
+            VISION_STATE["fails"] = 0
+            return v
+        except Exception as e:
+            VISION_STATE["fails"] += 1
+            print("[vision] check failed:", str(e)[:100])
+            if VISION_STATE["fails"] >= 6:  # circuit breaker: never let a dead model stall the render
+                VISION_STATE["disabled"] = True
+                print("[vision] disabled after repeated failures")
+                return None
     return None
 
 
@@ -135,15 +165,53 @@ def _web(topic: str, n=4) -> list:
     return out
 
 
+_STOPW = set("the and for that with from this were have has was are its which their also into more than such other about "
+             "been when after first most over only there these they them some what where while would could between".split())
+
+
+def _tf(text: str) -> dict:
+    tf = {}
+    for w in re.findall(r"[a-z]{4,}", text.lower()):
+        if w not in _STOPW:
+            tf[w] = tf.get(w, 0) + 1
+    return tf
+
+
+def _cos(a: dict, b: dict) -> float:
+    num = sum(v * b.get(k, 0) for k, v in a.items())
+    den = (sum(v * v for v in a.values()) ** 0.5) * (sum(v * v for v in b.values()) ** 0.5)
+    return num / den if den else 0.0
+
+
 def research(cfg) -> list:
-    """Collect sources for the topic. Returns [{id,url,title,text,authority}]."""
+    """Collect sources for the topic, keeping only ones that are actually about it (no 'Sega Saturn' for the planet)."""
     depth = str(cfg.get("research_depth", "standard")).lower()
     if depth == "off":
         return []
-    topic = re.sub(r"\b(top|\d+|facts?|about|amazing|interesting|reel|video)\b", " ", str(cfg["prompt"]), flags=re.I)
+    topic = re.sub(r"\b(top|\d+|facts?|about|amazing|interesting|unknown|reel|video|in hinglish|in hindi)\b", " ",
+                   str(cfg["prompt"]), flags=re.I)
     topic = re.sub(r"\s+", " ", topic).strip() or str(cfg["prompt"])
     n_wiki, n_web = (2, 2) if depth == "light" else (4, 5) if depth == "deep" else (3, 3)
-    sources = _wiki(topic, n_wiki) + _web(f"{topic} facts", n_web)
+    wiki = _wiki(topic, n_wiki + 3)
+    web = _web(f"{topic} facts", n_web + 2)
+    sources = []
+    if wiki:
+        main = _tf(wiki[0]["text"])
+        sources.append(wiki[0])
+        for s in wiki[1:]:
+            c = _cos(main, _tf(s["text"]))
+            if c >= 0.35 and len(sources) < n_wiki:
+                sources.append(s)
+            else:
+                print(f"[research] dropped off-topic source '{s['title']}' (similarity {c:.2f})")
+        for s in web:
+            c = _cos(main, _tf(s["text"]))
+            if c >= 0.2 and len(sources) < n_wiki + n_web:
+                sources.append(s)
+            else:
+                print(f"[research] dropped off-topic source {s['url']} (similarity {c:.2f})")
+    else:
+        sources = web[:n_web]
     for i, s in enumerate(sources):
         s["id"] = f"S{i + 1}"
         s["authority"] = any(a in s["url"] for a in AUTHORITY if a != "wikipedia.org")
@@ -159,17 +227,56 @@ def sources_digest(sources: list, budget=14000) -> str:
                        for s in sources)
 
 
+def _nums(text: str) -> list:
+    return [n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", text)]
+
+
+def _support(claim: str, text: str):
+    """Best 2-sentence window of a source for this claim: (score 0..1, snippet). Numbers in the claim must appear."""
+    terms = [w for w in _tf(claim)]
+    nums = _nums(claim)
+    if not terms and not nums:
+        return 0.0, ""
+    sents = re.split(r"(?<=[.!?])\s+", text)
+    best, snip = 0.0, ""
+    for k in range(len(sents)):
+        win = " ".join(sents[k:k + 2])
+        low = win.lower()
+        hit = sum(1 for w in terms if w in low or (len(w) > 5 and w[:-2] in low))
+        score = hit / max(1, len(terms))
+        wn = set(_nums(win))
+        if nums and not all(n in wn for n in nums):
+            score *= 0.4  # the number itself is not in this passage
+        if score > best:
+            best, snip = score, win[:240]
+    return round(best, 2), snip
+
+
 def verify_claims(plan: dict, sources: list) -> list:
-    """Traceable claims: verified = >=2 sources, or 1 authoritative / Wikipedia source."""
-    by_id = {s["id"]: s for s in sources}
+    """Checks each scene's claim against the text of its cited sources (and every other source).
+    verified = supported by >=2 sources, or by one authoritative/Wikipedia source with strong overlap.
+    single-source = one weaker supporting passage. unverified = no source text supports it."""
     report = []
     for i, sc in enumerate(plan.get("scenes", [])):
-        ids = [x for x in (sc.get("sources") or []) if x in by_id]
-        strong = len(ids) >= 2 or any(by_id[x]["authority"] or "wikipedia.org" in by_id[x]["url"] for x in ids)
-        status = "verified" if strong else ("single-source" if ids else ("no-claim" if not sc.get("claim") else "unverified"))
+        claim = str(sc.get("claim") or "").strip()
+        if not claim:
+            sc["verification"] = "no-claim"
+            report.append({"scene": i, "claim": "", "status": "no-claim", "sources": []})
+            continue
+        support = []
+        for s in sources:
+            score, snip = _support(claim, s["text"])
+            if score >= 0.5:
+                support.append({"id": s["id"], "url": s["url"], "score": score, "evidence": snip,
+                                "strong": score >= 0.65 and (s["authority"] or "wikipedia.org" in s["url"])})
+        support.sort(key=lambda x: -x["score"])
+        status = ("verified" if len(support) >= 2 or any(x["strong"] for x in support)
+                  else "single-source" if support else "unverified")
         sc["verification"] = status
-        report.append({"scene": i, "claim": sc.get("claim", ""), "status": status,
-                       "sources": [{"id": x, "url": by_id[x]["url"]} for x in ids]})
+        report.append({"scene": i, "claim": claim, "status": status, "cited": sc.get("sources") or [],
+                       "sources": support[:3]})
+    counts = {k: sum(1 for r in report if r["status"] == k) for k in ("verified", "single-source", "unverified")}
+    print("[facts]", counts)
     return report
 
 
@@ -213,16 +320,19 @@ CRITIC_SYSTEM = ("You are a strict short-form video editor and fact checker. You
                  "concrete fixes as JSON only.")
 
 
-def critique_script(plan: dict, cfg, verification: list) -> dict:
+def critique_script(plan: dict, cfg, verification: list, known_issues=None) -> dict:
     """Pass 1 (before voice): hook, story, ending, unverified claims -> rewrite fixes."""
-    brief = [{"i": i, "purpose": s.get("purpose"), "narration": s.get("narration"), "verification": s.get("verification")}
-             for i, s in enumerate(plan.get("scenes", []))]
+    brief = [{"i": i, "purpose": s.get("purpose"), "narration": s.get("narration"), "claim": s.get("claim"),
+              "verification": s.get("verification")} for i, s in enumerate(plan.get("scenes", []))]
     user = f"""Language: {cfg['language']}. Hook chosen: {json.dumps(plan.get('hook', {}), ensure_ascii=False)}
 Scenes: {json.dumps(brief, ensure_ascii=False)}
+Automatic checks already found (you MUST fix each of these): {json.dumps(known_issues or [], ensure_ascii=False)}
 Check: is the first scene a compelling 1-3 second hook (no "Fact number 1" opener, no greeting)? Does it escalate to a strongest
 reveal and end on a payoff/curiosity line (not just stopping)? Any scene whose factual claim is "unverified" must be rewritten to a
 safer, well-established statement or softened. Keep the language rules and voice-ready text rules (numbers as words, no symbols).
-Return {{"score": 0-10, "issues": ["..."], "rewrites": [{{"i": scene_index, "narration": "new narration"}}]}}. Empty rewrites if fine."""
+Also check that scenes connect into one escalating story (not five disconnected encyclopedia lines) and that no claim is
+exaggerated beyond what sources say. Do not give 9-10 if any issue remains.
+Return {{"score": 0-10, "issues": ["..."], "rewrites": [{{"i": scene_index, "narration": "new narration", "claim": "updated English claim"}}]}}. Empty rewrites if fine."""
     try:
         return llm_json(CRITIC_SYSTEM, user, temperature=0.3, retries=2, timeout=240)
     except Exception as e:
@@ -230,11 +340,14 @@ Return {{"score": 0-10, "issues": ["..."], "rewrites": [{{"i": scene_index, "nar
         return {"score": None, "issues": [], "rewrites": []}
 
 
-def critique_edit(summary: list, cfg) -> dict:
-    """Pass 2 (after visuals): relevance, repetition, pacing -> per-scene visual fixes."""
-    user = f"""Edited timeline of a {cfg['language']} fact reel (per scene: narration, chosen footage label, vision relevance 0-1,
-similarity to previous shot 0-1, shot type, duration seconds):
+def critique_edit(summary: list, cfg, known_issues=None) -> dict:
+    """Pass 2 (after visual selection, before rendering): relevance, repetition, pacing -> per-scene visual fixes."""
+    user = f"""Planned edit of a {cfg['language']} fact reel about {cfg.get('topic')}. Per scene: English gist, purpose,
+footage clips (stock query, vision relevance 0-1 = does the frame show the subject, similarity to other shots 0-1,
+weak flag, seconds), duration:
 {json.dumps(summary, ensure_ascii=False)}
+Automatic checks found: {json.dumps(known_issues or [], ensure_ascii=False)} — every scene listed there needs a fix.
+Treat relevance below 0.6 as a wrong visual even if the stock query sounds right.
 Find scenes where the visual does not support the narration, repeats the previous shot, or a long section feels static.
 For each, return a better English stock-footage query (specific subject + shot type) or ask for an infographic when the
 line is numeric/abstract. Return {{"score": 0-10, "issues": ["..."],
