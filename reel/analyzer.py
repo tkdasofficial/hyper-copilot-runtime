@@ -192,7 +192,7 @@ def analyze_clip(images: list, req: dict) -> dict:
         "another planet/object), semantic_relevance (does it support the narration), object_visibility, "
         "action_context, shot_suitability, temporal_consistency (all frames stay on-subject; no cut to unrelated "
         "content), visual_quality. Anything listed under Must NOT appear, visible text/logos/watermarks as the "
-        "main content, people/offices/cars for an astronomy line, or the wrong object => REJECT.\n"
+        "main content, people/offices/cars for an astronomy line, a planet photoshopped over an Earth landscape/sky (fantasy composite presented as real), toys/models/props instead of the real object, or the wrong object => REJECT.\n"
         'Reply with JSON only: {"seen": "what the frames really show, <=15 words", "subject_match": n, '
         '"semantic_relevance": n, "object_visibility": n, "action_context": n, "shot_suitability": n, '
         '"temporal_consistency": n, "visual_quality": n, "verdict": "ACCEPT" or "REJECT", "reason": "<=20 words"}')
