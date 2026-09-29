@@ -181,6 +181,40 @@ def _req_text(req: dict) -> str:
         ("Must NOT appear", ", ".join(req.get("must_not") or []) or "none")) if v)
 
 
+BLIND = (
+    "Describe ONLY what is literally visible in these {n} frames (time order, one clip). You are NOT told what the "
+    "clip is supposed to show - do not guess a topic, do not name a planet unless it is unmistakably visible.\n"
+    'Reply with JSON only: {{"description": "<=25 words, literal", "main_subject": "<=6 words", '
+    '"setting": "outer space" | "earth outdoors" | "indoors" | "abstract graphic" | "diagram or chart" | "text slide", '
+    '"real_photo_or_footage": true/false, "celestial_body_visible": true/false, '
+    '"body_features": "e.g. banded gas planet with rings / cratered grey moon / none", '
+    '"text_or_watermark_dominant": true/false, "earth_scenery_visible": true/false}}')
+
+
+def _blind(images: list) -> dict:
+    """Context-free caption first: the judge later cannot talk itself into 'this purple swirl is Saturn'."""
+    return _call(BLIND.format(n=len(images)), images, max_tokens=400)
+
+
+def _hard_reject(b: dict, req: dict):
+    for k in ("text_or_watermark_dominant", "celestial_body_visible", "earth_scenery_visible", "real_photo_or_footage"):
+        if isinstance(b.get(k), str):
+            b[k] = b[k].strip().lower() == "true"
+    setting = str(b.get("setting", "")).lower()
+    if setting == "text slide":
+        return "text slide"
+    if b.get("text_or_watermark_dominant"):
+        return "text/caption plate dominates the frame"
+    if req.get("space"):
+        if b.get("earth_scenery_visible") or setting in ("earth outdoors", "indoors"):
+            return f"earth scene ({b.get('main_subject', '')}) for an astronomy line"
+        if setting == "abstract graphic":
+            return "abstract graphic, not the real subject"
+        if not b.get("celestial_body_visible") and setting != "diagram or chart":
+            return "no planet/moon/rings visible"
+    return None
+
+
 @_guard
 def analyze_clip(images: list, req: dict) -> dict:
     """Frames of ONE candidate clip (in time order) vs the scene requirements -> scores 0..1 + verdict."""
@@ -196,6 +230,17 @@ def analyze_clip(images: list, req: dict) -> dict:
         'Reply with JSON only: {"seen": "what the frames really show, <=15 words", "subject_match": n, '
         '"semantic_relevance": n, "object_visibility": n, "action_context": n, "shot_suitability": n, '
         '"temporal_consistency": n, "visual_quality": n, "verdict": "ACCEPT" or "REJECT", "reason": "<=20 words"}')
+    b = _blind(images)
+    hard = _hard_reject(b, req)
+    if hard:
+        print(f"[analyzer] blind: {b.get('description', '')[:90]} -> REJECT ({hard})")
+        return {"scores": {k: 0.0 for k in KEYS}, "overall": 0.0, "accept": False,
+                "seen": str(b.get("description", ""))[:120], "reason": hard, "blind": b}
+    prompt += ("\nAn independent viewer who was NOT told the topic described these frames as: "
+               f"\"{b.get('description', '')}\" (main subject: {b.get('main_subject', '')}; features: "
+               f"{b.get('body_features', '')}). Treat that description as ground truth; if it does not match the "
+               "required subject (e.g. a grey cratered moon is not Titan's orange haze, a generic planet is not "
+               "Saturn unless rings/bands are described), REJECT.")
     j = _call(prompt, images)
     s = {k: max(0.0, min(1.0, float(j.get(k, 0) or 0) / 10)) for k in KEYS}
     overall = round(0.3 * s["subject_match"] + 0.25 * s["semantic_relevance"] + 0.1 * s["object_visibility"]
@@ -209,7 +254,7 @@ def analyze_clip(images: list, req: dict) -> dict:
         and not re.search(r"\b(water (ice|vapou?r|plumes?)|ice|space|orbit)\b", seen)
     ok = (not earthly and str(j.get("verdict", "")).upper().startswith("ACCEPT") and overall >= ACCEPT_BAR
           and s["subject_match"] >= 0.6 and s["temporal_consistency"] >= 0.5)
-    return {"scores": s, "overall": overall, "accept": ok, "seen": str(j.get("seen", ""))[:120],
+    return {"scores": s, "overall": overall, "accept": ok, "seen": str(b.get("description", ""))[:120],
             "reason": str(j.get("reason", ""))[:160]}
 
 
@@ -225,7 +270,14 @@ def qa_scene(images: list, req: dict) -> dict:
         "FAIL when: the required subject is absent, the footage is unrelated/generic/misleading, a Must-NOT item "
         "appears, the frames are black/blank/corrupted, or the scene is a static image that stays irrelevant.\n"
         'Reply with JSON only: {"seen": "<=15 words", "relevance": 0-10, "result": "PASS" or "FAIL", "reason": "<=20 words"}')
+    b = _blind(images)
+    hard = _hard_reject(b, req) if not str(req.get("required_subject", "")).startswith("readable infographic") else None
+    if hard:
+        return {"result": "FAIL", "relevance": 0.0, "seen": str(b.get("description", ""))[:120], "reason": hard}
+    prompt += ("\nAn independent viewer who was NOT told the topic described these frames as: "
+               f"\"{b.get('description', '')}\" (features: {b.get('body_features', '')}). Treat it as ground truth.")
     j = _call(prompt, images, max_tokens=500)
+    j["seen"] = b.get("description", j.get("seen", ""))
     rel = max(0.0, min(1.0, float(j.get("relevance", 0) or 0) / 10))
     ok = str(j.get("result", "")).upper().startswith("PASS") and rel >= 0.6
     return {"result": "PASS" if ok else "FAIL", "relevance": round(rel, 2), "seen": str(j.get("seen", ""))[:120],
