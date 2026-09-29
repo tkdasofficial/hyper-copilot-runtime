@@ -999,7 +999,9 @@ def find_footage(req, cfg, used_hashes, exclude=(), want=1, budget=18):
         pool = []
         for q in qs[bstart:bstart + 2]:
             for prov in order:
-                for photos in ([True] if photos_only else ([False, True] if bstart >= 2 else [False])):
+                # NASA's still archive (Cassini/Hubble/Voyager) is the deepest real source for space lines: search
+                # it from the first batch; stock libraries add stills only once their videos run dry.
+                for photos in ([True] if photos_only else ([False, True] if bstart >= 2 or prov == "nasa" else [False])):
                     cands = search_cached(prov, q, cfg, photos)
                     for c in cands:
                         if c["id"] in seen or c["id"] in USED or c["id"] in exclude or any(n in c["label"] for n in neg) \
