@@ -429,3 +429,22 @@ line is numeric/abstract. Return {{"score": 0-10, "issues": ["..."],
     except Exception as e:
         print("[critic] edit review skipped:", e)
         return {"score": None, "issues": [], "fixes": []}
+
+
+def requery(req: dict, log: list) -> list:
+    """New footage queries written from the analyzer's rejection reasons (what was wrong -> what to look for)."""
+    rejected = "\n".join(f"- '{x.get('query')}' -> {x.get('src')}: {x.get('seen') or ''} ({x.get('reason') or x.get('result')})"
+                         for x in log[-10:]) or "none"
+    try:
+        j = llm_json("You find real footage in NASA Image & Video Library, Pexels and Pixabay. Reply JSON only.",
+                     f"""Scene needs: {json.dumps({k: req.get(k) for k in ('topic', 'claim', 'visual_objective', 'required_subject', 'required_action', 'must_not')}, ensure_ascii=False)}
+Queries already tried and why the footage was rejected:
+{rejected}
+Write 5 NEW short English search queries (2-5 words) that real libraries would title such footage with (e.g. NASA mission names:
+Cassini, Voyager, Hubble, Juno, JWST; "animation", "flyby", "time-lapse"). Different from the tried ones.
+{{"queries": ["..."]}}""", temperature=0.4, retries=2, timeout=120)
+        tried = {str(x.get("query", "")).lower() for x in log}
+        return [q for q in (str(x).strip() for x in j.get("queries") or []) if q and q.lower() not in tried][:5]
+    except Exception as e:
+        print("[director] requery failed:", str(e)[:120])
+        return []
