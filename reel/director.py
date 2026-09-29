@@ -442,7 +442,7 @@ Queries already tried and why the footage was rejected:
 {rejected}
 Write 5 NEW short English search queries (2-5 words) that real libraries would title such footage with (e.g. NASA mission names:
 Cassini, Voyager, Hubble, Juno, JWST; "animation", "flyby", "time-lapse"). Different from the tried ones.
-{{"queries": ["..."]}}""", temperature=0.4, retries=2, timeout=120)
+{{"queries": ["..."]}}""", temperature=0.4, retries=1, timeout=60)
         tried = {str(x.get("query", "")).lower() for x in log}
         return [q for q in (str(x).strip() for x in j.get("queries") or []) if q and q.lower() not in tried][:5]
     except Exception as e:
