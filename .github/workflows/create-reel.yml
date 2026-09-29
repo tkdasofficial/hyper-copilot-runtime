@@ -46,6 +46,7 @@ jobs:
       PIXAZO_BASE_URL: ${{ secrets.PIXAZO_BASE_URL }}
       PIXAZO_IMAGE_MODEL: ${{ secrets.PIXAZO_IMAGE_MODEL }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      NASA_API_KEY: ${{ secrets.NASA_API_KEY }}
       ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
       ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
       ELEVENLABS_MODEL: ${{ secrets.ELEVENLABS_MODEL }}
