@@ -195,6 +195,7 @@ DIRECTION:
 - For Top N/list requests, exactly N distinct facts, each introduced with the fact label defined in LANGUAGE. A very short first hook is allowed; no separate outro scene.
 - For one focused topic, explain that topic with connected scenes and a strong final payoff, not a numbered list.
 - Never invent numbers, quotations, or unsupported superlatives.
+- Keep the exact reference of every comparison from the research ("2.5 times more energy than it RECEIVES from the Sun", not "than the Sun"; "less dense than water", not "lighter than water"). Dropping the reference changes the fact.
 - Keep each scene 1-2 short sentences (about 3-6 seconds spoken).
 - Each scene must have a SPECIFIC visual subject matching exactly what is spoken. Provide 3 concrete English stock-search phrases, most relevant first.
 - VOICE-READY TEXT (read aloud by ElevenLabs TTS, so write exactly what is spoken):
@@ -733,6 +734,22 @@ _VSCORE: dict = {}
 
 ANCHORS: set = set()
 
+# Stock labels that share a name with a sky object but show something else (Saturn V rocket, Mercury thermometer).
+HOMONYMS = {
+    "saturn": ["rocket", "apollo", "launch", "sega", "car", "engine", "gas", "station", "museum", "award", "vehicle"],
+    "mercury": ["thermometer", "freddie", "car", "liquid metal", "element"],
+    "mars": ["chocolate", "bar", "bruno", "candy"],
+    "jupiter": ["florida", "beach", "resort"],
+    "titan": ["crane", "truck", "watch"],
+    "venus": ["statue", "razor", "goddess", "painting"],
+    "pluto": ["disney", "dog", "cartoon"],
+}
+
+
+def _homonym(label, topic_words):
+    lab = label.lower()
+    return any(w in HOMONYMS and any(b in lab for b in HOMONYMS[w]) for w in topic_words)
+
 
 def ai_still(prompt, cfg, idx, _grade=None):
     """Pixazo Flux 1 Schnell still for scenes stock libraries cannot cover. Never used for News & Facts reels,
@@ -768,7 +785,7 @@ def ai_still(prompt, cfg, idx, _grade=None):
     return None
 
 
-def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_score=0.6, exclude=()):
+def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_score=0.6, exclude=(), require_anchor=False):
     """Semantic stock selection: search -> label pre-filter -> vision score + repetition check on previews
     (parallel, before any download) -> download the best -> quality probe. Returns asset dict or None.
     The returned asset carries weak=True when nothing met the relevance bar (reported, never hidden)."""
@@ -799,7 +816,8 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
             for photos in ([True] if photos_only else [False, True] if batch_start >= 2 else [False]):
                 for prov in order:
                     for c in search_cached(prov, q, cfg, photos):
-                        if c["id"] in seen or c["id"] in USED or c["id"] in exclude or any(n in c["label"] for n in neg):
+                        if c["id"] in seen or c["id"] in USED or c["id"] in exclude or any(n in c["label"] for n in neg) \
+                                or _homonym(c["label"], topic_words):
                             continue
                         seen.add(c["id"])
                         lab = _relevance(c, terms)
@@ -818,7 +836,7 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
                 _VSCORE[c["id"]] = director.vision_score(b64, subject, claim) if b64 else None
             return c, _VSCORE[c["id"]], h
 
-        with ThreadPoolExecutor(max_workers=4) as ex:
+        with ThreadPoolExecutor(max_workers=3) as ex:  # thumbnails in parallel; vision calls serialize themselves
             for c, v, h in ex.map(judge, fresh):
                 sim = max([visuals.similarity(h, u) for u in used_hashes] or [0.0])
                 base = v if v is not None else c["label_rel"] * 0.8
@@ -829,6 +847,7 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
                             or sum(a in lab_l for a in ANCHORS) >= 2)
                 # Without a vision verdict a label match alone is not enough: the stock label must name the
                 # reel's subject world (e.g. saturn/planet/space), otherwise "year" matches a party photo.
+                c["anchored"] = anchored
                 c["ok"] = sim < 0.88 and ((v >= min_score) if v is not None else (c["label_rel"] >= 0.5 and anchored))
                 if v is None and not anchored:
                     c["final"] = round(c["final"] * 0.3, 3)  # unverifiable + off-subject label: last-resort only
@@ -841,7 +860,9 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
               ", ".join(f"{c['id']} v={c['vision']} sim={c['sim']}" for c in sorted(scored, key=lambda c: -c['final'])[:3]) + ")")
     # A weak (loosely related) fallback is allowed and reported; a repeat of an existing shot never is.
     scored = [c for c in scored if c["sim"] < 0.88]
-    scored.sort(key=lambda c: (c["ok"], c["final"]), reverse=True)
+    if require_anchor:  # fact reels: an off-subject clip (windmill for "winds") is worse than a broader on-subject one
+        scored = [c for c in scored if c.get("anchored") or (c.get("vision") or 0) >= min_score]
+    scored.sort(key=lambda c: (c["ok"], c.get("anchored", False), c["final"]), reverse=True)
     for c in scored[:5]:
         ext = "jpg" if c["kind"] == "image" else "mp4"
         dest = WORK / f"asset_{idx}_{c['id']}.{ext}"
@@ -1183,14 +1204,15 @@ class Planner:
         # never reuse a clip/photo already placed in another scene (hashes of photo vs. thumbnail can differ)
         exclude = tuple(exclude) + tuple(sg["asset"]["id"] for k, p in self.plans.items() if k != i
                                          for sg in p.get("segments", []) if sg.get("asset"))
+        strict = _is_fact(self.cfg)  # fact reels: stock only, and every shot must show the reel's subject world
         segments = []
         for j in range(segs_n):
             ordered = queries[j % len(queries):] + queries[:j % len(queries)]
             asset = select_asset(ordered, self.cfg, self._nidx(), subject, claim, used, sc["shot_type"] if j == 0 else "",
-                                 exclude=exclude)
+                                 exclude=exclude, require_anchor=strict)
             if asset is None and j == 0:
                 asset = select_asset([f"{self.cfg['topic']} {queries[0]}", self.cfg["topic"]], self.cfg, self._nidx(),
-                                     subject, claim, used, exclude=exclude)
+                                     subject, claim, used, exclude=exclude, require_anchor=strict)
             if asset is None:
                 if segments:  # extend the previous shot instead of repeating it
                     segments[-1]["frames"] += cuts[j + 1] - cuts[j]
@@ -1200,7 +1222,10 @@ class Planner:
                 # Last resort before failing the reel: broad on-topic footage (still anchored, still de-duplicated).
                 broad = [f"{self.cfg['topic']} {a}" for a in sorted(ANCHORS)[:3]] + [self.cfg["topic"]]
                 asset = select_asset(broad, self.cfg, self._nidx(), self.cfg["topic"], claim, used, min_score=0.45,
-                                     exclude=exclude)
+                                     exclude=exclude, require_anchor=strict)
+                if asset is None and strict:  # nothing on-subject left: loosely related stock, flagged weak in QA
+                    asset = select_asset(broad, self.cfg, self._nidx(), self.cfg["topic"], claim, used, min_score=0.45,
+                                         exclude=exclude)
                 if asset is None:  # stock has nothing on-subject left: generate an exact still for this line
                     asset = ai_still(f"{subject}. {claim}".strip(), self.cfg, self._nidx(), GRADE.get("vf"))
                 if asset is None:
