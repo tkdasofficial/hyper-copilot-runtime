@@ -10,7 +10,7 @@ from urllib.parse import quote
 import requests
 
 NIM_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-TEXT_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b", "meta/llama-3.3-70b-instruct"]
+TEXT_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b", "deepseek-ai/deepseek-v4.1-flash", "nvidia/nemotron-3-super-120b-a12b"]
 UA = {"User-Agent": "HyperCopilotReel/3.0 (research bot; contact via github.com/tkdasofficial)"}
 AUTHORITY = ("nasa.gov", "esa.int", "noaa.gov", "nih.gov", "who.int", ".gov", ".edu", ".ac.", "isro.gov.in",
              "britannica.com", "nationalgeographic.com", "nature.com", "science.org", "si.edu", "wikipedia.org")
@@ -27,6 +27,10 @@ def llm_json(system: str, user: str, temperature=0.5, retries=3, timeout=300) ->
                                   json={"model": model, "temperature": temperature, "max_tokens": 16000,
                                         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
                                   timeout=timeout)
+                if r.status_code in (404, 410):  # retired model
+                    last = RuntimeError(f"NIM {r.status_code}")
+                    print(f"[director] {model} retired, trying next model")
+                    break
                 if r.status_code >= 400:
                     raise RuntimeError(f"NIM {r.status_code}: {r.text[:300]}")
                 msg = r.json()["choices"][0]["message"]
@@ -44,8 +48,8 @@ def llm_json(system: str, user: str, temperature=0.5, retries=3, timeout=300) ->
 
 
 VISION_STATE = {"model": None, "dead": set(), "fails": 0, "disabled": False, "calls": 0}
-VISION_MODELS = ["meta/llama-4-maverick-17b-128e-instruct", "meta/llama-3.2-90b-vision-instruct",
-                 "microsoft/phi-4-multimodal-instruct", "meta/llama-3.2-11b-vision-instruct",
+# 11b answers reliably; maverick/phi-4 are retired (410) and 90b times out, so they only follow as backups.
+VISION_MODELS = ["meta/llama-3.2-11b-vision-instruct", "meta/llama-3.2-90b-vision-instruct",
                  "@cf/meta/llama-3.2-11b-vision-instruct", "@cf/llava-hf/llava-1.5-7b-hf"]
 _CF_AGREED = set()
 
