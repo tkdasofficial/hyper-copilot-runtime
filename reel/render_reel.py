@@ -227,7 +227,7 @@ Return JSON:
 """
     key = os.environ.get("NVIDIA_API_KEY", "")
     last_err = None
-    for model in NIM_MODELS:
+    for model in NIM_MODELS + NIM_MODELS:  # second lap: provider overloads are usually over within minutes
         for attempt in range(2):  # a stalled model moves on quickly instead of burning 15 minutes
             try:
                 # Streamed: a long script arrives token by token, so a slow model never hits a whole-reply read timeout.
@@ -270,11 +270,16 @@ Return JSON:
                     text = "".join(reasoning) + text
                 text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
                 m = re.search(r"\{.*\}", text, flags=re.S)
+                if not m:
+                    raise RuntimeError(f"no JSON in reply ({len(text)} chars)")
                 raw = m.group(0)
                 try:
                     data = json.loads(raw)
-                except json.JSONDecodeError:  # common model slips: trailing commas, smart quotes
-                    data = json.loads(re.sub(r",\s*([}\]])", r"\1", raw.replace("\u201c", '"').replace("\u201d", '"')))
+                except json.JSONDecodeError:  # model slips (missing commas, trailing commas, smart quotes)
+                    import json_repair
+                    data = json_repair.loads(raw.replace("\u201c", '"').replace("\u201d", '"'))
+                    if not isinstance(data, dict):
+                        raise RuntimeError("script JSON could not be repaired")
                 scenes_out = [s for s in data.get("scenes", []) if str(s.get("narration", "")).strip()]
                 if len(scenes_out) < 2:
                     raise RuntimeError("script had too few scenes")
