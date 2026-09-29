@@ -30,7 +30,7 @@ concurrency:
 jobs:
   render-reel:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       contents: read
       actions: read
