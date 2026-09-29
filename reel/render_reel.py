@@ -1253,6 +1253,15 @@ class Planner:
                 if asset is None:  # stock has nothing on-subject left: generate an exact still for this line
                     asset = ai_still(f"{subject}. {claim}".strip(), self.cfg, self._nidx(), GRADE.get("vf"))
                 if asset is None:
+                    # Stock is exhausted for this subject: re-use the best on-subject shot from a non-adjacent scene
+                    # rather than killing the whole reel. It stays flagged (reused + weak) so QA reports it honestly.
+                    pool = [sg["asset"] for k, p in self.plans.items() if abs(k - i) > 1
+                            for sg in p.get("segments", []) if sg.get("asset") and sg["asset"].get("src") != "info"]
+                    pool.sort(key=lambda a: (not a.get("weak"), a.get("score") or 0), reverse=True)
+                    if pool:
+                        asset = dict(pool[0], reused=True, weak=True)
+                        print(f"[visual] scene {i + 1}: stock exhausted, re-using {asset['id']} from another scene")
+                if asset is None:
                     raise RuntimeError(f"no usable footage for scene {i + 1} ('{subject}')")
                 asset.setdefault("weak", asset.get("src") != "ai")
             if strict and asset is not None and asset.get("weak") and (asset.get("score") is None or asset["score"] < 0.4):
