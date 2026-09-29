@@ -16,7 +16,7 @@ from pathlib import Path
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import director, visuals, sound, qa  # noqa: E402
+import director, visuals, sound, qa, analyzer  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 WORK = Path(os.environ.get("WORK_DIR", "/tmp/reel_work"))
@@ -57,13 +57,15 @@ def load_payload() -> dict:
         "caption_size": g("captions.size", default="Medium"),
         "template": g("edit.template", default="Dynamic"),
         "duration": int(float(g("timing.duration_seconds", "duration_seconds", default=env("DURATION_SECONDS", "30")))),
-        "sources": g("visual.sources", "stock.sources", default="pexels,pixabay"),
+        "sources": g("visual.sources", "stock.sources", default="nasa,pexels,pixabay"),
         "hook_style": str(g("direction.hook_style", default="auto")).lower(),
         "pacing": str(g("direction.pacing", default="dynamic")).lower(),
         "music_level": str(g("direction.music_level", default="medium")).lower(),
         "sfx_level": str(g("direction.sfx_level", default="medium")).lower(),
         "creativity": str(g("direction.creativity", default="balanced")).lower(),
         "research_depth": str(g("direction.research_depth", default="standard")).lower(),
+        "probe": bool(g("meta.probe", default=False)),
+        "probe_scenes": g("meta.probe_scenes", default=[]),
         "retry_scene": int(re.sub(r"[^0-9-]", "", str(g("meta.retry_scene", default="-1"))) or -1),
     }
     topic = re.sub(r"\b(top|\d+|facts?|about|amazing|interesting|unknown|in hinglish|in hindi|in english)\b", " ",
@@ -141,15 +143,15 @@ NIM_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b", "deepseek-ai/deepseek-v4.1-fl
 
 
 LANG_RULES = {
-    "english": "LANGUAGE: Pure, natural spoken English only. No Hindi words at all. Fact label: \"Fact number 1\".",
-    "hindi": "LANGUAGE: Pure, natural spoken Hindi only, in Devanagari script. Do not mix English words; use natural Hindi equivalents (numbers in Hindi words or digits). Fact label: \"फैक्ट नंबर 1\" is not allowed; use \"तथ्य नंबर 1\" or \"नंबर 1\". Hook phrase: \"क्या आपको पता है?\".",
+    "english": "LANGUAGE: Pure, natural spoken English only. No Hindi words at all.",
+    "hindi": "LANGUAGE: Pure, natural spoken Hindi only, in Devanagari script. Do not mix English words; use natural Hindi equivalents (numbers in Hindi words or digits). Hook phrase: \"क्या आपको पता है?\".",
     "hinglish": ("LANGUAGE: Hinglish — the natural conversational Hindi + English mix Indian creators actually speak. "
                  "Write Hindi words in Devanagari and English words in Latin script, e.g. "
                  "\"क्या आपको पता है कि human body में एक ऐसा organ है जो खुद को regenerate कर सकता है?\". "
                  "Keep common modern/technical words in English (organ, planet, rocket, engine, brain, speed, record, scientists, data) "
                  "where that is how people naturally say them; keep grammar, connectors and emotion in Hindi. "
                  "Do not force English into every sentence and never translate common technical terms into awkward formal Hindi. "
-                 "It must read fluent, not machine-translated. Fact label: \"Fact number 1\". Hook: \"क्या आपको पता है?\" or \"Did you know?\"."),
+                 "It must read fluent, not machine-translated. Hook: \"क्या आपको पता है?\" or \"Did you know?\" only if natural."),
     "bengali": "LANGUAGE: Natural spoken Bengali only, in Bengali script.",
 }
 
@@ -192,12 +194,14 @@ DIRECTION:
 - Sound energetic, conversational and original, like a good Indian fact-video presenter. Use short, punchy sentences with minimal pauses, and natural punctuation for vocal emphasis on striking words.
 - Use "Did you know?" / "क्या आपको पता है?" only when it sounds natural; do not force or repeat it.
 - Every line must move the story forward. Sound like a real creator talking to a friend, never like an AI article.
-- For Top N/list requests, exactly N distinct facts, each introduced with the fact label defined in LANGUAGE. A very short first hook is allowed; no separate outro scene.
+- For Top N/list requests, exactly N distinct facts, each introduced with a natural spoken transition ("और सुनिए...", "But here is the crazy part", "अब सबसे बड़ा सरप्राइज़") - NEVER numbered labels such as "Fact number 1", "नंबर 2", "तथ्य नंबर 3", "पहला fact". A very short first hook is allowed; no separate outro scene.
 - For one focused topic, explain that topic with connected scenes and a strong final payoff, not a numbered list.
 - Never invent numbers, quotations, or unsupported superlatives.
 - Keep the exact reference of every comparison from the research ("2.5 times more energy than it RECEIVES from the Sun", not "than the Sun"; "less dense than water", not "lighter than water"). Dropping the reference changes the fact.
 - Keep each scene 1-2 short sentences (about 3-6 seconds spoken).
-- Each scene must have a SPECIFIC visual subject matching exactly what is spoken. Provide 3 concrete English stock-search phrases, most relevant first.
+- VISUAL FEASIBILITY: footage comes ONLY from real libraries (NASA Image & Video Library, Pexels, Pixabay) - no AI images. Write every line so real footage can show it (Saturn's rings, Cassini imagery, a spacecraft, a telescope, Earth vs Saturn scale). If a fact cannot be shown, pick a showable angle of it or use an allowed infographic.
+- Each scene has a "visual" plan: objective (what the viewer must SEE), subject (the exact object that must be visible), action (motion/context), shot_type, must_not (things that must NOT appear, e.g. "Saturn V rocket", "other planets", "people", "text slides").
+- Provide 5 concrete English footage-search queries per scene, most specific first, phrased the way NASA/stock libraries title footage ("Cassini Saturn rings flyby", "Saturn planet rotating animation", "Hubble Saturn aurora").
 - VOICE-READY TEXT (read aloud by ElevenLabs TTS, so write exactly what is spoken):
   * Write EVERY number as spoken words in the narration language (English "three hundred eighty-four thousand kilometres"; Hindi/Hinglish "तीन लाख चौरासी हज़ार किलोमीटर"; Bengali in Bengali words). Never digits in narration.
   * Round big numbers naturally; at most one number per sentence, comma before a big number.
@@ -216,7 +220,8 @@ Return JSON:
   "visual_anchors": ["5-10 lowercase English words, at least one of which any on-topic stock footage label must contain (e.g. saturn, planet, rings, space, galaxy, telescope)"],
   "scenes": [{{"purpose": "hook|context|fact|reveal|payoff", "narration": "...", "claim": "the factual claim in English or empty",
               "sources": ["S1"], "badge": "short fact number or empty", "headline": "1-3 word label or empty",
-              "shot_type": "...", "keywords": ["specific English stock query naming the exact subject (e.g. 'Saturn rings Cassini')", "alternative real-footage query", "broader on-topic query"],
+              "shot_type": "...", "visual": {{"objective": "...", "subject": "...", "action": "...", "must_not": ["..."]}},
+              "keywords": ["most specific footage query (e.g. 'Cassini Saturn rings flyby')", "query 2", "query 3", "query 4", "broader on-subject query"],
               "infographic": null, "sfx": "", "music_intensity": "medium",
               "emphasis": ["1-3 key words/numbers from the narration to highlight"]}}]}}
 """
@@ -528,18 +533,23 @@ def el_tts(text, cfg, out: Path, rate: str, ctx=None):
 def tts(text, cfg, out: Path, rate: str, ctx=None):
     """ElevenLabs first; Edge TTS only if ElevenLabs fails."""
     text = spoken_text(text, cfg)
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             w = el_tts(text, cfg, out, rate, ctx)
             print(f"[reel] voice: ElevenLabs ({el_voice(cfg)})")
+            VOICE_BY[out.name] = "elevenlabs"
             return w
         except Exception as e:
             print("[reel] ElevenLabs failed:", e)
             if EL_DISABLED["off"] or not os.environ.get("ELEVENLABS_API_KEY"):
                 break
-            time.sleep(2)
+            time.sleep(4 * (attempt + 1))
     print("[reel] voice: Edge TTS backup")
+    VOICE_BY[out.name] = "edge"
     return edge_tts_voice(text, cfg, out, rate)
+
+
+VOICE_BY: dict = {}
 
 
 def edge_tts_voice(text, cfg, out: Path, rate: str):
@@ -684,12 +694,16 @@ def _score(c, terms, cfg):
     return (round(rel, 2), quality, comp, c["kind"] == "video")
 
 
-def _download(c, dest):
+def _download(c, dest, cap_mb=250):
     with requests.get(c["url"], stream=True, timeout=120) as r:
         r.raise_for_status()
+        n = 0
         with open(dest, "wb") as f:
             for chunk in r.iter_content(1 << 20):
                 f.write(chunk)
+                n += len(chunk)
+                if n > cap_mb << 20:
+                    raise RuntimeError(f"file larger than {cap_mb} MB")
 
 
 def _try_provider(name, q, cfg, idx, photos, neg):
@@ -726,7 +740,8 @@ _SEARCH_CACHE: dict = {}
 def search_cached(prov, q, cfg, photos):
     key = (prov, q.lower(), photos)
     if key not in _SEARCH_CACHE:
-        _SEARCH_CACHE[key] = (search_pixabay if prov == "pixabay" else search_pexels)(q, cfg, photos)
+        fn = {"pixabay": search_pixabay, "nasa": analyzer.search_nasa}.get(prov, search_pexels)
+        _SEARCH_CACHE[key] = fn(q, cfg, photos)
     return _SEARCH_CACHE[key]
 
 
@@ -905,6 +920,155 @@ def select_asset(queries, cfg, idx, subject, claim, used_hashes, shot="", min_sc
     return None
 
 
+def scene_req(cfg, sc, override=None):
+    """Visual requirements the analyzer judges footage against (from the storyboard, never from stock labels)."""
+    v = sc.get("visual") if isinstance(sc.get("visual"), dict) else {}
+    must_not = [str(x) for x in (v.get("must_not") or []) if str(x).strip()]
+    tw = {w.lower() for w in re.findall(r"[A-Za-z]{4,}", str(cfg.get("topic", "")))}
+    for w in tw:
+        must_not += [f"{w} {b}" for b in HOMONYMS.get(w, [])[:4]]
+    qs = [str(k) for k in ((override or {}).get("queries") or sc.get("keywords") or []) if str(k).strip()]
+    return {"topic": cfg.get("topic"), "narration": sc.get("narration", ""), "claim": sc.get("claim", ""),
+            "visual_objective": v.get("objective") or (qs[0] if qs else ""), "required_subject": v.get("subject") or cfg.get("topic"),
+            "required_action": v.get("action", ""), "shot_type": sc.get("shot_type", ""), "must_not": must_not[:10],
+            "queries": qs[:6]}
+
+
+_VERDICT: dict = {}
+_CAND_FILE: dict = {}
+SPACEY = re.compile(r"saturn|jupiter|mars|venus|mercury|neptune|uranus|pluto|moon|planet|galaxy|nebula|star|sun|solar|"
+                    r"space|astronaut|rocket|nasa|comet|asteroid|black hole|universe|orbit|earth|telescope|cassini|hubble", re.I)
+
+
+def _cand_file(c):
+    """Download a candidate once (the analyzer must see the real file); returns path or None."""
+    if c["id"] in _CAND_FILE:
+        return _CAND_FILE[c["id"]]
+    path = None
+    try:
+        if c["src"] == "nasa" and not analyzer.resolve_nasa(c):
+            raise RuntimeError("no media file in NASA manifest")
+        ext = "jpg" if c["kind"] == "image" else "mp4"
+        dest = WORK / "cand" / f"{c['id']}.{ext}"
+        dest.parent.mkdir(exist_ok=True)
+        _download(c, dest)
+        ok = dest.stat().st_size > 20_000 and not unusable_asset(dest, c["kind"])
+        if ok and c["kind"] == "video":
+            info = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                        "-of", "csv=p=0", str(dest)]).strip().split(",")
+            wh = [int(x) for x in info if x.isdigit()]
+            ok = len(wh) == 2 and min(wh) >= 720
+            c["short"] = min(wh) if len(wh) == 2 else 0
+            c["dur"] = analyzer._duration(dest)
+            ok = ok and c["dur"] >= 1.5
+        path = dest if ok else None
+    except Exception as e:
+        print(f"[footage] {c['id']} download failed:", str(e)[:100])
+    _CAND_FILE[c["id"]] = path
+    return path
+
+
+def find_footage(req, cfg, used_hashes, exclude=(), want=1, budget=18):
+    """Multi-source search -> download -> frames -> Nemotron Omni verdict -> ranked ACCEPTED clips.
+    Titles/tags only order the candidates; they never accept one. Returns (accepted_assets, log)."""
+    photos_only = str(cfg["visual_type"]).lower().startswith("stock photo")
+    neg = _neg_terms(cfg)
+    topic_words = {w.lower() for w in re.findall(r"[A-Za-z]{4,}", str(cfg.get("topic", "")))}
+    order = [p for p in ("pexels", "pixabay") if p in str(cfg["sources"]).lower()] or ["pexels", "pixabay"]
+    if SPACEY.search(f"{cfg.get('topic', '')} {req.get('required_subject', '')}") or "nasa" in str(cfg["sources"]).lower():
+        order = ["nasa"] + order
+    qs, seen_q = [], set()
+    for q in req.get("queries") or [cfg["topic"]]:
+        q = re.sub(r"\b(infographic|chart|graph|diagram|comparison|visualization)\b", " ", str(q), flags=re.I)
+        q = re.sub(r"\s+", " ", q).strip()
+        if q and not topic_words & set(q.lower().split()) and SPACEY.search(str(cfg.get("topic", ""))):
+            q = f"{cfg['topic']} {q}"
+        if q and q.lower() not in seen_q:
+            seen_q.add(q.lower()); qs.append(q)
+    accepted, log, analyzed = [], [], 0
+    seen = set()
+    rkey = (req.get("narration") or "")[:80]
+    for bstart in range(0, len(qs), 2):
+        if analyzed >= budget or len(accepted) >= want:
+            break
+        pool = []
+        for q in qs[bstart:bstart + 2]:
+            for prov in order:
+                for photos in ([True] if photos_only else ([False, True] if bstart >= 2 else [False])):
+                    cands = search_cached(prov, q, cfg, photos)
+                    for c in cands:
+                        if c["id"] in seen or c["id"] in USED or c["id"] in exclude or any(n in c["label"] for n in neg) \
+                                or _homonym(c["label"], topic_words):
+                            continue
+                        seen.add(c["id"])
+                        pool.append({**c, "query": q, "label_rel": round(_relevance(c, _terms(q)), 2)})
+        # labels only ORDER the work (most promising first, NASA/videos first); the analyzer decides
+        pool.sort(key=lambda c: (c["label_rel"], c["src"] == "nasa", c["kind"] == "video"), reverse=True)
+        pool = pool[:max(0, min(6, budget - analyzed))]
+
+        def judge(c):
+            path = _cand_file(c)
+            if path is None:
+                return c, None, [], "unusable file"
+            d = c.get("dur") or 0
+            # long clips (NASA films run minutes): judge exactly the 10 s window the edit will use, not the whole film
+            c["win"] = (0.0, d) if c["kind"] != "video" or d <= 15 else (round(d * 0.35, 2), round(d * 0.35 + 10, 2))
+            imgs, hs = analyzer.frames(path, c["kind"], n=4, start=c["win"][0], end=c["win"][1] if d else None)
+            sim = max([visuals.similarity(h, u) for h in hs for u in used_hashes] or [0.0])
+            if sim >= 0.88:
+                return c, None, hs, f"duplicate of a used shot (sim {sim:.2f})"
+            key = (c["id"], rkey)
+            if key not in _VERDICT:
+                _VERDICT[key] = analyzer.analyze_clip(imgs, req) if imgs else None
+            return c, _VERDICT[key], hs, round(sim, 2)
+
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            for c, v, hs, note in ex.map(judge, pool):
+                analyzed += 1
+                entry = {"id": c["id"], "src": c["src"], "query": c["query"]}
+                if v is None:
+                    entry.update(result="REJECT" if isinstance(note, str) else "UNVERIFIED",
+                                 reason=note if isinstance(note, str) else "analyzer unavailable")
+                    log.append(entry)
+                    if not isinstance(note, str):
+                        c["_unverified"] = (_CAND_FILE.get(c["id"]), hs, note)
+                        c["_hs"] = hs
+                        accepted.append(("u", c))
+                    continue
+                entry.update(result="ACCEPT" if v["accept"] else "REJECT", overall=v["overall"], seen=v["seen"],
+                             reason=v["reason"])
+                log.append(entry)
+                print(f"[analyzer] {c['id']} ({c['src']}) {entry['result']} {v['overall']} seen='{v['seen']}' "
+                      f"reason='{v['reason']}' q='{c['query']}'")
+                if v["accept"]:
+                    c["_v"], c["_hs"], c["_sim"] = v, hs, note
+                    accepted.append(("a", c))
+                    used_hashes = list(used_hashes) + [h for h in hs if h is not None]
+        if sum(1 for t, _ in accepted if t == "a") >= want:
+            break
+    good = [c for t, c in accepted if t == "a"]
+    good.sort(key=lambda c: c["_v"]["overall"], reverse=True)
+    out = []
+    for c in good[:want]:
+        USED.add(c["id"])
+        out.append({"path": _CAND_FILE[c["id"]], "kind": c["kind"], "src": c["src"], "id": c["id"], "url": c["url"],
+                    "query": c["query"], "score": c["_v"]["overall"], "scores": c["_v"]["scores"],
+                    "seen": c["_v"]["seen"], "reason": c["_v"]["reason"], "label": c["label_rel"],
+                    "sim": c["_sim"], "hash": (c["_hs"] or [None])[0], "hashes": c["_hs"], "dur": c.get("dur", 0),
+                    "win": c.get("win"), "verified": True, "weak": False})
+    if not out and analyzer.STATE["down"]:
+        # Analyzer outage: never pretend. Take the best label-anchored clip, clearly marked UNVERIFIED (fails acceptance).
+        unv = [c for t, c in accepted if t == "u" and _CAND_FILE.get(c["id"])
+               and (any(w in c["label"] for w in topic_words) or sum(a in c["label"] for a in ANCHORS) >= 2)]
+        for c in unv[:want]:
+            USED.add(c["id"])
+            out.append({"path": _CAND_FILE[c["id"]], "kind": c["kind"], "src": c["src"], "id": c["id"], "url": c["url"],
+                        "query": c["query"], "score": None, "label": c["label_rel"], "sim": 0.0,
+                        "hash": (c["_hs"] or [None])[0], "hashes": c["_hs"], "dur": c.get("dur", 0),
+                        "verified": False, "weak": True, "reason": "analyzer unavailable - unverified"})
+    return out, log
+
+
 def _refine(q):
     t = _terms(q)
     out = []
@@ -1048,7 +1212,8 @@ def render_scene(asset, t, i, dur, W, H, fps, name=None) -> Path:
     if asset["kind"] == "image":
         inp = ["-loop", "1", "-i", str(asset["path"])]
     else:
-        inp = ["-stream_loop", "-1", "-i", str(asset["path"])]
+        ss = float(asset.get("ss") or 0)
+        inp = ["-stream_loop", "-1", *(["-ss", f"{ss:.2f}"] if ss > 0 else []), "-i", str(asset["path"])]
     run(["ffmpeg", "-y", *inp, "-frames:v", str(max(1, round(dur * fps))), "-vf", vf, "-an", "-r", str(fps),
          "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-threads", "2", "-pix_fmt", "yuv420p", str(out)])
     return out
@@ -1180,6 +1345,7 @@ def _fact_template(cfg, t):
 
 PROJECT = WORK / "project"
 INFO_MAX = 2
+MAX_HOLD = 3.4  # seconds one shot may stay on screen in a fact reel
 
 
 class Planner:
@@ -1206,7 +1372,8 @@ class Planner:
             if k == skip:
                 continue
             for seg in p.get("segments", []):
-                out += [h for h in (seg["asset"].get("hash"), seg["asset"].get("thumb_hash")) if h is not None]
+                a = seg.get("asset") or {}
+                out += [h for h in [a.get("hash"), a.get("thumb_hash"), *(a.get("hashes") or [])] if h is not None]
         return out
 
     def _nidx(self):
@@ -1214,86 +1381,61 @@ class Planner:
         return self.seq
 
     def plan(self, i, sc, override=None, exclude=()):
+        """Footage for one scene: only analyzer-ACCEPTED clips. Nothing acceptable -> NO_SUITABLE_FOOTAGE_FOUND
+        (or an allowed infographic), never a generic clip."""
         override = override or {}
         nframes = round(sc["dur"] * self.fps)
-        subject = str((override.get("queries") or sc["keywords"] or [self.cfg["prompt"]])[0])
-        claim = sc.get("claim") or ""
+        req = scene_req(self.cfg, sc, override)
+        subject, claim = req["required_subject"], sc.get("claim") or ""
         info = override.get("infographic")
         if info and self.info_ok(i):
             return self._info_plan(i, sc, info, subject, claim, nframes)
-        queries = [str(k) for k in (override.get("queries") or sc["keywords"]) if str(k).strip()][:4] or [self.cfg["prompt"]]
         segs_n = max(1, math.ceil(sc["dur"] / self.cut_len)) if self.t.get("fact_style") else 1
-        cuts = [round(nframes * k / segs_n) for k in range(segs_n + 1)]
         used = self.used_hashes(skip=i)
-        # never reuse a clip/photo already placed in another scene (hashes of photo vs. thumbnail can differ)
         exclude = tuple(exclude) + tuple(sg["asset"]["id"] for k, p in self.plans.items() if k != i
                                          for sg in p.get("segments", []) if sg.get("asset"))
-        strict = _is_fact(self.cfg)  # fact reels: stock only, and every shot must show the reel's subject world
-        segments = []
-        for j in range(segs_n):
-            ordered = queries[j % len(queries):] + queries[:j % len(queries)]
-            asset = select_asset(ordered, self.cfg, self._nidx(), subject, claim, used, sc["shot_type"] if j == 0 else "",
-                                 exclude=exclude, require_anchor=strict)
-            if asset is None and j == 0:
-                asset = select_asset([f"{self.cfg['topic']} {queries[0]}", self.cfg["topic"]], self.cfg, self._nidx(),
-                                     subject, claim, used, exclude=exclude, require_anchor=strict)
-            if asset is None:
-                if segments:  # extend the previous shot instead of repeating it
-                    segments[-1]["frames"] += cuts[j + 1] - cuts[j]
-                    continue
-                if sc.get("infographic") and self.info_ok(i):
-                    return self._info_plan(i, sc, sc["infographic"], subject, claim, nframes)
-                # Last resort before failing the reel: broad on-topic footage (still anchored, still de-duplicated).
-                broad = [f"{self.cfg['topic']} {a}" for a in sorted(ANCHORS)[:3]] + [self.cfg["topic"]]
-                asset = select_asset(broad, self.cfg, self._nidx(), self.cfg["topic"], claim, used, min_score=0.45,
-                                     exclude=exclude, require_anchor=strict)
-                if asset is None and strict:  # nothing on-subject left: loosely related stock, flagged weak in QA
-                    asset = select_asset(broad, self.cfg, self._nidx(), self.cfg["topic"], claim, used, min_score=0.45,
-                                         exclude=exclude)
-                if asset is None:  # stock has nothing on-subject left: generate an exact still for this line
-                    asset = ai_still(f"{subject}. {claim}".strip(), self.cfg, self._nidx(), GRADE.get("vf"))
-                if asset is None:
-                    # Stock is exhausted for this subject: re-use the best on-subject shot from a non-adjacent scene
-                    # rather than killing the whole reel. It stays flagged (reused + weak) so QA reports it honestly.
-                    pool = [sg["asset"] for k, p in self.plans.items() if abs(k - i) > 1
-                            for sg in p.get("segments", []) if sg.get("asset") and sg["asset"].get("src") != "info"]
-                    pool.sort(key=lambda a: (not a.get("weak"), a.get("score") or 0), reverse=True)
-                    if pool:
-                        asset = dict(pool[0], reused=True, weak=True)
-                        print(f"[visual] scene {i + 1}: stock exhausted, re-using {asset['id']} from another scene")
-                if asset is None:
-                    raise RuntimeError(f"no usable footage for scene {i + 1} ('{subject}')")
-                asset.setdefault("weak", asset.get("src") != "ai")
-            if strict and asset is not None and asset.get("weak") and (asset.get("score") is None or asset["score"] < 0.4):
-                # Vision says the literal-query clip is off-subject (ice sheet for "Saturn ice"): take a verified
-                # shot of the subject itself from a broad subject pool instead; keep the weak clip only if none.
-                topic = self.cfg["topic"]
-                pool = [f"{topic} planet", f"{topic} rings", f"{topic} space", "planet with rings in space",
-                        "gas giant planet", "solar system planets", "planet orbit space"]
-                alt = select_asset(pool, self.cfg, self._nidx(), f"{topic} planet", claim, used, min_score=0.5,
-                                   exclude=exclude + (asset["id"],), require_anchor=True)
-                if alt is not None and not alt.get("weak"):
-                    USED.discard(asset["id"])
-                    asset = alt
-            if asset is not None and asset.get("weak") and (asset.get("score") is None or asset["score"] < 0.4):
-                # Stock only had an unrelated shot (vision: "wind turbine" for Saturn's winds). An exact generated
-                # still of the subject beats a misleading clip; keep the stock clip only if generation fails.
-                gen = ai_still(f"{subject}. {claim}".strip(), self.cfg, self._nidx())
-                if gen is not None:
-                    USED.discard(asset["id"])
-                    asset = gen
-            if j == 0 and asset.get("weak") and sc.get("infographic") and self.info_ok(i):
-                USED.discard(asset["id"])
+        clips, log = find_footage(req, self.cfg, used, exclude, want=segs_n)
+        if len(clips) < min(segs_n, 2) and not analyzer.STATE["down"]:
+            # rejected -> new queries written from the analyzer's reasons -> other sources -> analyze again
+            newq = director.requery(req, log)
+            if newq:
+                more, log2 = find_footage({**req, "queries": newq}, self.cfg,
+                                          used + [h for c in clips for h in c.get("hashes") or [] if h is not None],
+                                          exclude + tuple(c["id"] for c in clips), want=segs_n - len(clips))
+                clips += more
+                log += log2
+        if not clips:
+            if sc.get("infographic") and self.info_ok(i):
                 return self._info_plan(i, sc, sc["infographic"], subject, claim, nframes)
-            used += [h for h in (asset.get("hash"), asset.get("thumb_hash")) if h is not None]
-            segments.append({"asset": asset, "frames": cuts[j + 1] - cuts[j]})
-        p = {"type": "footage", "segments": segments}
+            print(f"[visual] scene {i + 1}: NO_SUITABLE_FOOTAGE_FOUND ({len(log)} candidates analyzed)")
+            p = {"type": "missing", "status": "NO_SUITABLE_FOOTAGE_FOUND", "frames": nframes, "segments": [],
+                 "log": log[-15:], "req": req}
+            self.plans[i] = p
+            return p
+        # Split the narration across the accepted clips; a long clip may give a second, visually different moment.
+        pieces = [{"asset": c, "ss": round((c.get("win") or (0, 0))[0] + 0.3, 2)} for c in clips]
+        need = max(len(pieces), min(segs_n, math.ceil(sc["dur"] / MAX_HOLD)))
+        for c in sorted(clips, key=lambda c: -(c.get("dur") or 0)):
+            if len(pieces) >= need:
+                break
+            hs = c.get("hashes") or []
+            w0, w1 = c.get("win") or (0, c.get("dur") or 0)
+            if c["kind"] == "video" and (w1 - w0) >= 2 * sc["dur"] / need + 1 and len(hs) >= 4 \
+                    and visuals.similarity(hs[0], hs[-1]) < 0.85:
+                pieces.append({"asset": c, "ss": round(w0 + (w1 - w0) * 0.6, 2), "second_moment": True})
+        pieces = pieces[:max(1, need)]
+        cuts = [round(nframes * k / len(pieces)) for k in range(len(pieces) + 1)]
+        segments = [{**pc, "frames": cuts[j + 1] - cuts[j]} for j, pc in enumerate(pieces)]
+        p = {"type": "footage", "segments": segments, "log": log[-15:], "req": req}
         self.plans[i] = p
         return p
 
     def _info_plan(self, i, sc, info, subject, claim, nframes):
-        bg = select_asset(sc["keywords"][:2], self.cfg, self._nidx(), subject, claim, self.used_hashes(skip=i), min_score=0.5)
-        p = {"type": "infographic", "info": info, "frames": nframes, "segments": [{"asset": bg, "frames": nframes}] if bg else []}
+        req = scene_req(self.cfg, sc)
+        got, _ = find_footage(req, self.cfg, self.used_hashes(skip=i), want=1, budget=6)
+        bg = got[0] if got else None
+        p = {"type": "infographic", "info": info, "frames": nframes, "req": req,
+             "segments": [{"asset": bg, "frames": nframes}] if bg else []}
         self.plans[i] = p
         return p
 
@@ -1302,9 +1444,13 @@ class Planner:
         if p["type"] == "infographic":
             return [{"type": "infographic", "title": p["info"].get("title", ""),
                      "background": (p["segments"][0]["asset"].get("id") if p["segments"] else None)}]
+        if p["type"] == "missing":
+            return [{"type": "missing", "status": p["status"], "seconds": round(p["frames"] / self.fps, 2),
+                     "rejected": [f"{x['id']}: {x.get('reason', '')}" for x in p.get("log", [])][-6:]}]
         return [{"type": s["asset"]["kind"], "id": s["asset"].get("id"), "src": s["asset"].get("src"),
-                 "query": s["asset"].get("query"), "relevance": s["asset"].get("score"), "label": s["asset"].get("label"),
-                 "similarity": s["asset"].get("sim"), "weak": bool(s["asset"].get("weak")),
+                 "query": s["asset"].get("query"), "relevance": s["asset"].get("score"), "seen": s["asset"].get("seen"),
+                 "verified": bool(s["asset"].get("verified")), "similarity": s["asset"].get("sim"),
+                 "weak": bool(s["asset"].get("weak")), "in_point": s.get("ss", 0),
                  "seconds": round(s["frames"] / self.fps, 2)} for s in p["segments"]]
 
     def render(self, i):
@@ -1316,10 +1462,15 @@ class Planner:
             visuals.render_infographic(p["info"], p["frames"] / self.fps, self.W, self.H, self.fps, out, WORK,
                                        background=bg["path"] if bg else None, bg_kind=bg["kind"] if bg else "video")
             return [out]
+        if p["type"] == "missing":  # honest placeholder: QA fails it and the redo loop replaces it
+            out = WORK / f"missing_{i:02d}_{self._nidx()}.mp4"
+            run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=0x0b0f1a:s={self.W}x{self.H}:r={self.fps}",
+                 "-frames:v", str(p["frames"]), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(out)])
+            return [out]
         outs = []
         for s in p["segments"]:
-            outs.append(render_scene(s["asset"], self.t, self._nidx(), s["frames"] / self.fps, self.W, self.H, self.fps,
-                                     name=f"scene_{i:02d}_{len(outs)}_{self._nidx()}"))
+            outs.append(render_scene({**s["asset"], "ss": s.get("ss", 0)}, self.t, self._nidx(), s["frames"] / self.fps,
+                                     self.W, self.H, self.fps, name=f"scene_{i:02d}_{len(outs)}_{self._nidx()}"))
         return outs
 
 
@@ -1331,6 +1482,10 @@ def hard_checks(timeline, planner, fps) -> list:
         issues.append("hook: opens with a label/greeting instead of a curiosity hook")
     if timeline and timeline[0]["dur"] > 5.5:
         issues.append(f"hook: first scene is {timeline[0]['dur']:.1f}s (should be under 5s)")
+    label_re = re.compile(r"(fact\s*(number|no\.?|#)\s*\w+|फैक्ट\s*नंबर|तथ्य\s*नंबर|^\s*नंबर\s*\S+|^\s*number\s+\w+|पहला\s+fact)", re.I)
+    labelled = [k + 1 for k, sc in enumerate(timeline) if label_re.search(str(sc.get("narration", "")))]
+    if labelled:
+        issues.append(f"script: numbered 'Fact number' style labels in scenes {labelled} (use natural transitions)")
     purposes = [str(sc.get("purpose", "")).lower() for sc in timeline]
     if purposes and purposes[0] != "hook":
         issues.append("story: first scene is not a hook")
@@ -1343,8 +1498,12 @@ def hard_checks(timeline, planner, fps) -> list:
         issues.append("infographics: two charts back to back")
     hashes = []
     for i in sorted(planner.plans):
+        if planner.plans[i]["type"] == "missing":
+            issues.append(f"visual: scene {i + 1} NO_SUITABLE_FOOTAGE_FOUND")
         for seg in planner.plans[i].get("segments", []):
             a = seg["asset"]
+            if a.get("verified") is False:
+                issues.append(f"visual: scene {i + 1} footage not verified by the analyzer")
             if a.get("weak"):
                 issues.append(f"visual: scene {i + 1} footage is only loosely related (relevance {a.get('score')})")
             h = a.get("hash")
@@ -1353,7 +1512,7 @@ def hard_checks(timeline, planner, fps) -> list:
                     issues.append(f"repetition: scene {i + 1} looks like scene {k + 1}")
                     break
             hashes.append((i, h))
-            if seg["frames"] / fps > planner.cut_len * 1.8 and planner.plans[i]["type"] == "footage":
+            if seg["frames"] / fps > MAX_HOLD + 0.3 and planner.plans[i]["type"] == "footage":
                 issues.append(f"pacing: scene {i + 1} holds one shot for {seg['frames'] / fps:.1f}s")
     return list(dict.fromkeys(issues))
 
@@ -1369,8 +1528,14 @@ def _voice_all(cfg, t, scenes, fps, vid):
         return a, director.restore_display(words, cfg)
 
     update_row(vid, step=f"Voiceover (ElevenLabs) for {len(scenes)} scenes", progress=20)
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:  # = ElevenLabs concurrency on this plan
         results = list(ex.map(one, range(len(scenes))))
+    # Coverage pass: any line that fell back to Edge gets one more sequential ElevenLabs try (keeps one voice).
+    for i in range(len(scenes)):
+        if VOICE_BY.get(f"voice_{i:02d}.mp3") == "edge" and os.environ.get("ELEVENLABS_API_KEY") and not EL_DISABLED["off"]:
+            time.sleep(3)
+            print(f"[voice] scene {i + 1} was on Edge TTS; retrying ElevenLabs")
+            results[i] = one(i)
     timeline, audio_parts, cursor = [], [], 0.0
     for i, (sc, (a, words)) in enumerate(zip(scenes, results)):
         d = math.ceil((probe_duration(a) + float(t.get("scene_gap", 0.2))) * fps) / fps
@@ -1382,7 +1547,8 @@ def _voice_all(cfg, t, scenes, fps, vid):
                          "purpose": sc.get("purpose", ""), "shot_type": sc.get("shot_type", ""),
                          "infographic": sc.get("infographic") if isinstance(sc.get("infographic"), dict) else None,
                          "sfx": sc.get("sfx", ""), "music_intensity": sc.get("music_intensity", "medium"),
-                         "narration": sc["narration"]})
+                         "narration": sc["narration"], "visual": sc.get("visual") if isinstance(sc.get("visual"), dict) else {},
+                         "voice": VOICE_BY.get(f"voice_{i:02d}.mp3", "unknown")})
         cursor += d
     return timeline, audio_parts, cursor
 
@@ -1428,12 +1594,133 @@ def _save_project(state, scene_clips, mixed, ass, final):
     (PROJECT / "state.json").write_text(json.dumps(state, ensure_ascii=False, default=str), encoding="utf-8")
 
 
+def _plans_state(planner):
+    return {str(k): {"type": p["type"], "info": p.get("info"), "frames": p.get("frames"), "status": p.get("status"),
+                     "req": p.get("req"), "log": p.get("log"),
+                     "segments": [{"asset": _asset_state(s["asset"]), "frames": s["frames"], "ss": s.get("ss", 0)}
+                                  for s in p.get("segments", []) if s.get("asset")]} for k, p in planner.plans.items()}
+
+
+def _acc_note(acc):
+    if acc["passed"]:
+        return None
+    bad = [k for k, v in acc["checks"].items() if not v]
+    return ("Exported, but acceptance failed: " + ", ".join(bad) +
+            (f" (scenes {acc['failed_scenes']})" if acc["failed_scenes"] else ""))[:480]
+
+
 def _asset_state(a):
     return {k: (str(v) if isinstance(v, Path) else v) for k, v in a.items()} if a else None
 
 
+def visual_qa(final, timeline, planner, cfg, only=None, prev=None) -> dict:
+    """Frames of EVERY rendered scene -> Nemotron Omni PASS/FAIL + reason; plus repetition and timing checks."""
+    res = {int(k): v for k, v in (prev or {}).items()}
+    idxs = list(only) if only is not None else list(range(len(timeline)))
+
+    def one(i):
+        sc, p = timeline[i], planner.plans.get(i, {})
+        imgs, hs = analyzer.frames(final, "video", n=3, start=sc["start"] + 0.12, end=sc["end"] - 0.12)
+        if p.get("type") == "missing":
+            return i, {"result": "FAIL", "reason": "NO_SUITABLE_FOOTAGE_FOUND", "hashes": hs}
+        req = dict(p.get("req") or scene_req(cfg, sc))
+        if p.get("type") == "infographic":
+            req["visual_objective"] = f"an animated data card / infographic: {p['info'].get('title', '')} (a chart IS correct here)"
+            req["required_subject"] = "readable infographic about " + str(cfg.get("topic"))
+        v = analyzer.qa_scene(imgs, req) if imgs else None
+        if v is None:
+            return i, {"result": "UNVERIFIED", "reason": "visual analyzer unavailable", "hashes": hs}
+        return i, {**v, "hashes": hs}
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        for i, r in ex.map(one, idxs):
+            res[i] = r
+    for i in sorted(res):
+        segs = planner.plans.get(i, {}).get("segments", [])
+        hold = max([sg["frames"] / planner.fps for sg in segs] or [0])
+        if planner.plans.get(i, {}).get("type") == "footage" and hold > MAX_HOLD + 1.2:
+            res[i] = {**res[i], "result": "FAIL", "reason": f"timing: one shot held {hold:.1f}s"}
+        for j in sorted(res):
+            if j >= i:
+                break
+            sim = max([visuals.similarity(a, b) for a in res[i].get("hashes") or [] for b in res[j].get("hashes") or []
+                       if a is not None and b is not None] or [0])
+            if sim >= 0.93 and res[i]["result"] != "FAIL":
+                res[i] = {**res[i], "result": "FAIL", "reason": f"repetition: looks like scene {j + 1} (sim {sim:.2f})"}
+    for i in sorted(res):
+        print(f"[visual-qa] scene {i + 1}: {res[i]['result']} - {res[i].get('reason', '')} | seen: {res[i].get('seen', '')}")
+    return res
+
+
+def acceptance(timeline, planner, verification, vqa) -> dict:
+    checks = {
+        "narration_elevenlabs_every_scene": all(sc.get("voice") == "elevenlabs" for sc in timeline) or not os.environ.get("ELEVENLABS_API_KEY"),
+        "facts_verified": not any(v["status"] == "unverified" for v in verification),
+        "footage_inspected_by_analyzer": all(sg["asset"].get("verified") for p in planner.plans.values()
+                                             for sg in p.get("segments", []) if p["type"] == "footage"),
+        "no_missing_footage": not any(p["type"] == "missing" for p in planner.plans.values()),
+        "scene_visual_qa_pass": all(v["result"] == "PASS" for v in vqa.values()) and len(vqa) == len(timeline),
+        "timing_ok": all(sg["frames"] / planner.fps <= MAX_HOLD + 0.3 for p in planner.plans.values()
+                         if p["type"] == "footage" for sg in p.get("segments", [])),
+    }
+    failed = sorted(i + 1 for i, v in vqa.items() if v["result"] != "PASS")
+    return {"passed": all(checks.values()), "checks": checks, "failed_scenes": failed}
+
+
+def _vqa_public(vqa):
+    return [{"scene": i + 1, **{k: v for k, v in r.items() if k != "hashes"}} for i, r in sorted(vqa.items())]
+
+
+def redo_failed(cfg, timeline, planner, rendered, vqa, video, mixed, ass, final, rounds=2):
+    """Regenerate ONLY the scenes visual QA failed (new queries from the failure reason), re-render, re-QA them."""
+    redone = []
+    for rnd in range(rounds):
+        bad = [i for i, r in sorted(vqa.items()) if r["result"] == "FAIL"]
+        if not bad:
+            break
+        for k in bad:
+            p = planner.plans[k]
+            old_ids = tuple(sg["asset"]["id"] for sg in p.get("segments", []) if sg.get("asset"))
+            log = (p.get("log") or []) + [{"query": "rendered scene", "seen": vqa[k].get("seen"), "reason": vqa[k].get("reason")}]
+            newq = director.requery(p.get("req") or scene_req(cfg, timeline[k]), log)
+            ov = {"queries": (newq or []) + list(timeline[k]["keywords"])[:3]}
+            if p["type"] == "infographic" and timeline[k].get("infographic"):
+                ov = {}
+            print(f"[redo] round {rnd + 1} scene {k + 1}: {vqa[k].get('reason')} -> {ov.get('queries')}")
+            del planner.plans[k]
+            planner.plan(k, timeline[k], ov, exclude=old_ids)
+            rendered[k] = planner.render(k)
+            redone.append({"scene": k + 1, "round": rnd + 1, "reason": vqa[k].get("reason"),
+                           "new_plan": planner.meta(k)})
+        _concat([c for i in range(len(timeline)) for c in rendered[i]], video)
+        _encode_final(cfg, planner.fps, video, mixed, ass, final)
+        vqa = visual_qa(final, timeline, planner, cfg, only=bad, prev=vqa)
+    return vqa, redone
+
+
+def probe_main(cfg):
+    """Controlled scene-level test: analyzer + multi-source search on a few scenes. No voice, no render, no DB."""
+    t0 = time.time()
+    print("[probe] analyzer ready:", analyzer.ready())
+    scenes = cfg.get("probe_scenes") or []
+    ANCHORS.update(w.lower() for w in re.findall(r"[A-Za-z]{4,}", cfg["topic"]))
+    planner = Planner(cfg, _fact_template(cfg, load_template(cfg["template"])), 1080, 1920, 60, "probe")
+    out = []
+    for i, sc in enumerate(scenes):
+        sc = {"dur": float(sc.get("dur", 4.4)), "shot_type": sc.get("shot_type", ""), **sc}
+        t1 = time.time()
+        p = planner.plan(i, sc)
+        out.append({"scene": i + 1, "type": p["type"], "clips": planner.meta(i), "secs": round(time.time() - t1, 1),
+                    "analyzed": len(p.get("log", [])), "log": p.get("log", [])})
+        print("[probe]", json.dumps(out[-1], ensure_ascii=False, default=str))
+    print("[probe] summary", json.dumps({"analyzer": {k: v for k, v in analyzer.STATE.items()}, "seconds": round(time.time() - t0, 1),
+                                         "scenes": [(o["scene"], o["type"], len(o["clips"])) for o in out]}, default=str))
+
+
 def main():
     cfg = load_payload()
+    if cfg.get("probe"):
+        return probe_main(cfg)
     if cfg.get("retry_scene", -1) >= 0:
         return retry_main(cfg)
     vid = cfg["video_id"]
@@ -1472,6 +1759,21 @@ def main():
                 continue
         if rewritten:  # re-verify rewritten claims against the sources instead of assuming they are now safe
             verification = director.verify_claims(script, sources)
+        still = [v["scene"] for v in verification if v["status"] == "unverified"]
+        if still:  # one more targeted pass: rewrite ONLY the still-unverified claims to what the sources say
+            fix = director.critique_script(script, cfg, verification,
+                                           [f"scene index {k}: claim is UNVERIFIED by the sources - rewrite it to a statement the "
+                                            f"RESEARCH text supports, or replace it with a different sourced fact" for k in still])
+            for fx in fix.get("rewrites") or []:
+                try:
+                    k = int(fx.get("i"))
+                    if k in still and str(fx.get("narration", "")).strip():
+                        scenes[k]["narration"] = str(fx["narration"]).strip()
+                        scenes[k]["claim"] = str(fx.get("claim") or scenes[k].get("claim") or "")
+                        rewritten.append(k)
+                except (TypeError, ValueError):
+                    continue
+            verification = director.verify_claims(script, sources)
         print("[director] script score:", review.get("score"), review.get("issues"), "rewrote", rewritten)
         visuals.enforce_shot_variety(scenes)
         GRADE["vf"] = visuals.grade_filter(script.get("visual_bible"))
@@ -1487,6 +1789,8 @@ def main():
         timeline, audio_parts, total = _voice_all(cfg, t, scenes, fps, vid)
         lap("voice")
 
+        if not analyzer.ready():
+            print("[visual] WARNING: visual analyzer unavailable - footage cannot be verified; acceptance will fail")
         planner = Planner(cfg, t, W, H, fps, title)
         for i, sc in enumerate(timeline):
             update_row(vid, step=f"Choosing visuals {i + 1}/{len(timeline)}", progress=40 + int(22 * i / len(timeline)))
@@ -1581,6 +1885,18 @@ def main():
             sims = [s["asset"].get("sim") or 0.0 for i in sorted(planner.plans) for s in planner.plans[i].get("segments", [])]
             report = qa.check(final, cfg, W, H, fps, total, sims, verification)
         report["repaired_scenes"] = repaired
+        update_row(vid, step="Visual QA of every scene", progress=91)
+        vqa = visual_qa(final, timeline, planner, cfg)
+        vqa, redone = redo_failed(cfg, timeline, planner, rendered, vqa, video, mixed, ass, final)
+        lap("visual_qa")
+        if redone:
+            sims = [s["asset"].get("sim") or 0.0 for i in sorted(planner.plans) for s in planner.plans[i].get("segments", [])]
+            report = {**qa.check(final, cfg, W, H, fps, total, sims, verification), "repaired_scenes": repaired}
+        report["scene_qa"] = _vqa_public(vqa)
+        report["redone_scenes"] = redone
+        report["acceptance"] = acceptance(timeline, planner, verification, vqa)
+        report["voice"] = {"elevenlabs": sum(sc.get("voice") == "elevenlabs" for sc in timeline),
+                           "edge": sum(sc.get("voice") == "edge" for sc in timeline), "scenes": len(timeline)}
         post = hard_checks(timeline, planner, fps)
         report["warnings"] = list(dict.fromkeys(report["warnings"] + post))
         report["director"] = {"hook": script.get("hook"), "script_score": review.get("score"),
@@ -1588,8 +1904,9 @@ def main():
                               "issues": (review.get("issues") or []) + (edit_review.get("issues") or []),
                               "script_rewrites": rewritten, "visual_fixes": [k + 1 for k in fixed],
                               "hard_checks_before_fix": pre_issues, "hard_checks_final": post}
-        report["visuals"] = {"vision_model": director.VISION_STATE["model"], "vision_calls": director.VISION_STATE["calls"],
-                             "vision_disabled": director.VISION_STATE["disabled"],
+        report["visuals"] = {"analyzer_model": analyzer.OMNI, "analyzer_calls": analyzer.STATE["calls"],
+                             "analyzer_seconds": round(analyzer.STATE["seconds"], 1), "analyzer_down": analyzer.STATE["down"],
+                             "analyzer_error": analyzer.STATE["last_error"],
                              "infographic_scenes": [k + 1 for k in sorted(planner.info_scenes())]}
         lap("qa")
         report["timing_s"] = clock | {"start": None}
@@ -1600,11 +1917,11 @@ def main():
             raise RuntimeError("Quality check failed: " + "; ".join(report["issues"]))
         _save_project({"cfg": {k: v for k, v in cfg.items()}, "title": title, "timeline": timeline, "fps": fps,
                        "total": total, "verification": verification, "report": report, "grade": GRADE["vf"],
-                       "plans": {str(k): {"type": p["type"], "info": p.get("info"), "frames": p.get("frames"),
-                                          "segments": [{"asset": _asset_state(s["asset"]), "frames": s["frames"]}
-                                                       for s in p.get("segments", [])]} for k, p in planner.plans.items()},
+                       "plans": _plans_state(planner), "vqa": {str(k): v for k, v in vqa.items()},
                        "used": sorted(USED)}, rendered, mixed, ass, final)
-        (WORK / "result.json").write_text(json.dumps({"path": str(final), "title": title}), encoding="utf-8")
+        acc = report["acceptance"]
+        (WORK / "result.json").write_text(json.dumps({"path": str(final), "title": title, "accepted": acc["passed"],
+                                                      "note": _acc_note(acc)}), encoding="utf-8")
         update_row(vid, step="Rendered, uploading to Google Drive", progress=92, title=title)
         print("[reel] rendered:", final, round(final.stat().st_size / 1e6, 2), "MB", "timing:", report["timing_s"])
     except Exception as e:
@@ -1642,7 +1959,8 @@ def _fetch_project(vid):
 
 def retry_main(cfg):
     """Redo ONE scene: re-choose and re-render only that scene's visuals; reuse every other rendered clip, the
-    voice/music mix and the caption track (timing is unchanged, so nothing else needs re-timing)."""
+    voice/music mix and the caption track (timing is unchanged, so nothing else needs re-timing). If no better
+    footage passes the analyzer, the original reel is kept untouched."""
     vid, k = cfg["video_id"], cfg["retry_scene"]
     t0 = time.time()
     try:
@@ -1657,19 +1975,24 @@ def retry_main(cfg):
         t = _fact_template(scfg, load_template(scfg["template"]))
         GRADE["vf"] = state.get("grade", "")
         USED.update(state.get("used", []))
+        ANCHORS.update(w.lower() for w in re.findall(r"[A-Za-z]{4,}", scfg["topic"]))
         planner = Planner(scfg, t, W, H, fps, state["title"])
         for key, p in state["plans"].items():
-            segs = [{"asset": {**s["asset"], "path": Path(s["asset"]["path"])}, "frames": s["frames"]}
+            segs = [{"asset": {**s["asset"], "path": Path(s["asset"]["path"])}, "frames": s["frames"], "ss": s.get("ss", 0)}
                     for s in p["segments"] if s.get("asset")]
-            planner.plans[int(key)] = {"type": p["type"], "info": p.get("info"), "frames": p.get("frames"), "segments": segs}
+            planner.plans[int(key)] = {**p, "segments": segs}
         before = planner.meta(k)
+        old_plan = planner.plans[k]
         old_ids = {m.get("id") for m in before if m.get("id")} | {m.get("background") for m in before if m.get("background")}
         sc = timeline[k]
-        update_row(vid, step=f"Redoing scene {k + 1}: choosing new visuals", progress=30)
-        queries = list(dict.fromkeys((sc.get("keywords") or [])[1:] + (sc.get("keywords") or [])[:1])) or [scfg["prompt"]]
-        was_info = planner.plans[k]["type"] == "infographic"
+        update_row(vid, step=f"Redoing scene {k + 1}: finding and analyzing new footage", progress=30)
+        log = (old_plan.get("log") or []) + [{"query": "user asked to redo this shot", "reason": "user rejected the current shot"}]
+        newq = director.requery(old_plan.get("req") or scene_req(scfg, sc), log)
+        queries = list(dict.fromkeys((newq or []) + (sc.get("keywords") or [])))
         del planner.plans[k]
-        planner.plan(k, sc, {"queries": queries} if not was_info else {"queries": queries}, exclude=old_ids)
+        planner.plan(k, sc, {"queries": queries} if old_plan["type"] != "infographic" else {}, exclude=tuple(old_ids))
+        if planner.plans[k]["type"] == "missing":
+            raise LookupError(f"no new footage passed the visual analyzer for scene {k + 1}; the original shot was kept")
         update_row(vid, step=f"Redoing scene {k + 1}: rendering", progress=55)
         new_clips = planner.render(k)
         clips = []
@@ -1680,24 +2003,27 @@ def retry_main(cfg):
         update_row(vid, step=f"Redoing scene {k + 1}: final render", progress=75)
         final = WORK / "final.mp4"
         _encode_final(scfg, fps, video, PROJECT / "mix.m4a", PROJECT / "overlay.ass", final)
-        update_row(vid, step="Quality check", progress=88)
+        update_row(vid, step=f"Redoing scene {k + 1}: visual QA", progress=85)
+        vqa = visual_qa(final, timeline, planner, scfg, only=[k], prev=state.get("vqa") or {})
         sims = [s["asset"].get("sim") or 0.0 for i in sorted(planner.plans) for s in planner.plans[i].get("segments", [])]
         report = qa.check(final, scfg, W, H, fps, state["total"], sims, state["verification"])
         post = hard_checks(timeline, planner, fps)
         report["warnings"] = list(dict.fromkeys(report["warnings"] + post))
         prev = state.get("report") or {}
-        for key in ("director", "visuals"):
+        for key in ("director", "visuals", "voice", "timing_s"):
             if key in prev:
                 report[key] = prev[key]
         after = planner.meta(k)
+        report["scene_qa"] = _vqa_public(vqa)
+        report["acceptance"] = acceptance(timeline, planner, state["verification"], vqa)
         report["retry"] = {"scene": k + 1, "before": before, "after": after, "seconds": round(time.time() - t0, 1),
-                           "reused_scenes": len(timeline) - 1}
+                           "reused_scenes": len(timeline) - 1, "scene_qa": report["scene_qa"][k]}
         report["director"] = {**report.get("director", {}), "hard_checks_final": post}
-        rows = _scene_rows(timeline, planner, state["verification"])
-        update_row(vid, qa_report=report, scenes=rows)
-        print("[retry]", json.dumps(report["retry"], ensure_ascii=False))
+        print("[retry]", json.dumps(report["retry"], ensure_ascii=False, default=str))
         if not report["passed"]:
             raise RuntimeError("Quality check failed: " + "; ".join(report["issues"]))
+        rows = _scene_rows(timeline, planner, state["verification"])
+        update_row(vid, qa_report=report, scenes=rows)
         rendered = {i: ([c for c in new_clips] if i == k else [PROJECT / "clips" / n for n in state["clips"][str(i)]])
                     for i in range(len(timeline))}
         tmp = {i: [WORK / f"keep_{i:02d}_{n}.mp4" for n in range(len(g))] for i, g in rendered.items()}
@@ -1707,23 +2033,27 @@ def retry_main(cfg):
         mix_keep, ass_keep = WORK / "mix_keep.m4a", WORK / "overlay_keep.ass"
         shutil.copy2(PROJECT / "mix.m4a", mix_keep)
         shutil.copy2(PROJECT / "overlay.ass", ass_keep)
-        state["plans"] = {str(i): {"type": p["type"], "info": p.get("info"), "frames": p.get("frames"),
-                                   "segments": [{"asset": _asset_state(s["asset"]), "frames": s["frames"]}
-                                                for s in p.get("segments", [])]} for i, p in planner.plans.items()}
+        state["plans"], state["vqa"] = _plans_state(planner), {str(i): v for i, v in vqa.items()}
         state["used"], state["report"] = sorted(USED), report
         _save_project(state, tmp, mix_keep, ass_keep, final)
-        (WORK / "result.json").write_text(json.dumps({"path": str(final), "title": state["title"], "retry": k}), encoding="utf-8")
+        (WORK / "result.json").write_text(json.dumps({"path": str(final), "title": state["title"], "retry": k,
+                                                      "accepted": report["acceptance"]["passed"],
+                                                      "note": _acc_note(report["acceptance"])}), encoding="utf-8")
         update_row(vid, step="Rendered, uploading to Google Drive", progress=92)
     except Exception as e:
         msg = f"Redo scene {k + 1} failed: {str(e)[:450]}"
         print("[reel] FAILED:", msg, file=sys.stderr)
-        update_row(vid, status="failed", step="failed", error=msg)
+        # the previously exported reel is untouched, so the row stays usable
+        update_row(vid, status="completed", step="Finished", progress=100, error=msg)
         sys.exit(1)
 
 
 def upload_main():
     cfg = load_payload()
     vid = cfg["video_id"]
+    if cfg.get("probe"):
+        print("[probe] nothing to upload")
+        return
     try:
         info = json.loads((WORK / "result.json").read_text(encoding="utf-8"))
         final = Path(info["path"])
@@ -1737,7 +2067,7 @@ def upload_main():
             existing = (row or [{}])[0].get("file_id")
         file_id = upload_to_drive(final, info["title"], existing)
         update_row(vid, status="completed", step="Finished", progress=100, file_id=file_id,
-                   video_url=f"drive:{file_id}", error=None, title=info["title"])
+                   video_url=f"drive:{file_id}", error=info.get("note"), title=info["title"])
         print("[reel] uploaded to Google Drive Videos folder:", file_id)
     except Exception as e:
         msg = f"Google Drive upload failed: {str(e)[:450]}"
