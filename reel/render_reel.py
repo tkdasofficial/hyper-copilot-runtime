@@ -735,31 +735,36 @@ ANCHORS: set = set()
 
 
 def ai_still(prompt, cfg, idx, _grade=None):
-    """Cloudflare Workers AI (FLUX schnell) still for scenes stock libraries cannot cover (e.g. Saturn's hexagon).
-    Returns an image asset (animated later with the usual Ken-Burns move) or None."""
-    acc, tok = os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""), os.environ.get("CLOUDFLARE_API_TOKEN", "")
-    if not acc or not tok:
+    """Pixazo Flux 1 Schnell still for scenes stock libraries cannot cover. Never used for News & Facts reels,
+    which must stay on real stock media. Returns an image asset (animated with the usual Ken-Burns move) or None."""
+    if re.search(r"news|fact", str(cfg.get("category", "")), re.I):
         return None
-    # numbers/claims in the prompt make FLUX paint garbled captions ("0.69 g/cum3") - describe the subject only
+    key = os.environ.get("PIXAZO_API_KEY", "")
+    if not key:
+        return None
+    base = (os.environ.get("PIXAZO_BASE_URL") or "https://gateway.pixazo.ai").rstrip("/")
     prompt = re.sub(r"[\d.,%/°]+\s*\w{0,4}", " ", re.sub(r"\([^)]*\)", " ", prompt))
     prompt = re.sub(r"\s+", " ", prompt).strip()[:300]
     full = (f"{prompt}. Photorealistic cinematic documentary frame, {cfg.get('style', 'cinematic')} style, "
-            "accurate science visualization, vertical composition, absolutely no text, no letters, no numbers, no labels, "
-            "no diagram annotations, no watermark, no people unless mentioned")
+            "vertical composition, absolutely no text, no letters, no numbers, no labels, no watermark")
     for attempt in range(2):
         try:
-            r = requests.post(f"https://api.cloudflare.com/client/v4/accounts/{acc}/ai/run/@cf/black-forest-labs/flux-1-schnell",
-                              headers={"Authorization": f"Bearer {tok}"}, json={"prompt": full[:2000], "steps": 8}, timeout=90)
+            r = requests.post(f"{base}/flux-1-schnell/v1/getData",
+                              headers={"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/json",
+                                       "Cache-Control": "no-cache"},
+                              json={"prompt": full[:2000], "num_steps": 8, "width": 768, "height": 1344}, timeout=120)
             r.raise_for_status()
-            img = base64.b64decode(r.json()["result"]["image"])
+            j = r.json()
+            url = j.get("output") or j.get("imageUrl")
+            img = requests.get(url, timeout=60).content if url else b""
             dest = WORK / f"asset_{idx}_ai.jpg"
             dest.write_bytes(img)
             if len(img) > 20_000 and not unusable_asset(dest, "image"):
-                print(f"[visual] AI still for '{prompt[:70]}'")
-                return {"path": dest, "kind": "image", "src": "ai", "id": f"ai{idx}", "url": "", "query": prompt[:120],
+                print(f"[visual] Pixazo still for '{prompt[:70]}'")
+                return {"path": dest, "kind": "image", "src": "ai", "id": f"ai{idx}", "url": url, "query": prompt[:120],
                         "score": None, "label": 1.0, "sim": 0.0, "hash": visuals.dhash(dest, "image"), "weak": False}
         except Exception as e:
-            print(f"[visual] AI still failed (attempt {attempt + 1}):", str(e)[:150])
+            print(f"[visual] Pixazo still failed (attempt {attempt + 1}):", str(e)[:150])
     return None
 
 
