@@ -87,7 +87,27 @@ def _cf_vision(model, image_b64, prompt, timeout):
     return _parse_score(out if isinstance(out, str) else json.dumps(out))
 
 
+import threading
+_VLOCK = threading.Lock()
+
+
 def _vision_call(model, image_b64, prompt, timeout):
+    # One vision request at a time with 429 back-off: parallel bursts made NVIDIA rate-limit every check.
+    with _VLOCK:
+        for wait in (0, 4, 10, 20):
+            if wait:
+                time.sleep(wait)
+            try:
+                return _vision_once(model, image_b64, prompt, timeout)
+            except requests.HTTPError as e:
+                if getattr(e.response, "status_code", 0) not in (429, 500, 502, 503) or wait == 20:
+                    raise
+                ra = e.response.headers.get("Retry-After", "")
+                if ra.isdigit():
+                    time.sleep(min(30, int(ra)))
+
+
+def _vision_once(model, image_b64, prompt, timeout):
     if model.startswith("@cf/"):
         return _cf_vision(model, image_b64, prompt, timeout)
     key = os.environ.get("NVIDIA_API_KEY", "")
