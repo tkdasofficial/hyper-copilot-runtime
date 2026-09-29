@@ -931,7 +931,7 @@ def scene_req(cfg, sc, override=None):
     return {"topic": cfg.get("topic"), "narration": sc.get("narration", ""), "claim": sc.get("claim", ""),
             "visual_objective": v.get("objective") or (qs[0] if qs else ""), "required_subject": v.get("subject") or cfg.get("topic"),
             "required_action": v.get("action", ""), "shot_type": sc.get("shot_type", ""), "must_not": must_not[:10],
-            "queries": qs[:6]}
+            "queries": qs[:6], "space": bool(SPACEY.search(f"{cfg.get('topic', '')} {v.get('subject') or ''}"))}
 
 
 _VERDICT: dict = {}
@@ -1013,7 +1013,7 @@ def find_footage(req, cfg, used_hashes, exclude=(), want=1, budget=18):
             d = c.get("dur") or 0
             # long clips (NASA films run minutes): judge exactly the 10 s window the edit will use, not the whole film
             c["win"] = (0.0, d) if c["kind"] != "video" or d <= 15 else (round(d * 0.35, 2), round(d * 0.35 + 10, 2))
-            imgs, hs = analyzer.frames(path, c["kind"], n=4, start=c["win"][0], end=c["win"][1] if d else None)
+            imgs, hs = analyzer.frames(path, c["kind"], n=6 if d <= 15 else 5, start=c["win"][0], end=c["win"][1] if d else None)
             sim = max([visuals.similarity(h, u) for h in hs for u in used_hashes] or [0.0])
             if sim >= 0.88:
                 return c, None, hs, f"duplicate of a used shot (sim {sim:.2f})"
@@ -1635,6 +1635,9 @@ def visual_qa(final, timeline, planner, cfg, only=None, prev=None) -> dict:
     with ThreadPoolExecutor(max_workers=3) as ex:
         for i, r in ex.map(one, idxs):
             res[i] = r
+    for i in [k for k in idxs if res[k]["result"] == "UNVERIFIED"]:  # capacity blips: one calm sequential retry
+        time.sleep(8)
+        res[i] = one(i)[1]
     for i in sorted(res):
         segs = planner.plans.get(i, {}).get("segments", [])
         hold = max([sg["frames"] / planner.fps for sg in segs] or [0])
@@ -1643,10 +1646,17 @@ def visual_qa(final, timeline, planner, cfg, only=None, prev=None) -> dict:
         for j in sorted(res):
             if j >= i:
                 break
-            sim = max([visuals.similarity(a, b) for a in res[i].get("hashes") or [] for b in res[j].get("hashes") or []
+            # Rendered frames share the grade, captions and a black-space background, so their hashes look alike
+            # even for different shots; repetition is judged on the SOURCE assets (same clip id or near-identical
+            # source frames), which is what a viewer perceives as "the same shot again".
+            ai = planner.plans.get(i, {}).get("segments", []); aj = planner.plans.get(j, {}).get("segments", [])
+            same = {sg["asset"]["id"] for sg in ai if sg.get("asset")} & {sg["asset"]["id"] for sg in aj if sg.get("asset")}
+            sim = max([visuals.similarity(a, b) for x in ai if x.get("asset") for a in x["asset"].get("hashes") or []
+                       for y in aj if y.get("asset") for b in y["asset"].get("hashes") or []
                        if a is not None and b is not None] or [0])
-            if sim >= 0.93 and res[i]["result"] != "FAIL":
-                res[i] = {**res[i], "result": "FAIL", "reason": f"repetition: looks like scene {j + 1} (sim {sim:.2f})"}
+            if (same or sim >= 0.93) and res[i]["result"] != "FAIL":
+                why = f"same clip {sorted(same)[0]}" if same else f"sim {sim:.2f}"
+                res[i] = {**res[i], "result": "FAIL", "reason": f"repetition: looks like scene {j + 1} ({why})"}
     for i in sorted(res):
         print(f"[visual-qa] scene {i + 1}: {res[i]['result']} - {res[i].get('reason', '')} | seen: {res[i].get('seen', '')}")
     return res
