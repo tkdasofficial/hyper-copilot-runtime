@@ -225,6 +225,8 @@ Return JSON:
     for model in NIM_MODELS:
         for attempt in range(2):  # a stalled model moves on quickly instead of burning 15 minutes
             try:
+                # Streamed: a long script arrives token by token, so a slow model never hits a whole-reply read timeout.
+                # The per-chunk timeout still catches a model that has stalled completely.
                 r = requests.post(
                     "https://integrate.api.nvidia.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
@@ -233,8 +235,9 @@ Return JSON:
                         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                         "temperature": temp,
                         "max_tokens": 16000,
+                        "stream": True,
                     },
-                    timeout=180,
+                    timeout=(20, 120), stream=True,
                 )
                 if r.status_code in (404, 410):  # retired model: skip straight to the next one
                     last_err = RuntimeError(f"NIM {r.status_code}: {r.text[:200]}")
@@ -242,14 +245,31 @@ Return JSON:
                     break
                 if r.status_code >= 400:
                     raise RuntimeError(f"NIM {r.status_code}: {r.text[:300]}")
-                msg = r.json()["choices"][0]["message"]
-                text = msg.get("content") or ""
+                parts, reasoning, t0 = [], [], time.time()
+                for line in r.iter_lines(decode_unicode=True):
+                    if not line or not line.startswith("data:"):
+                        continue
+                    chunk = line[5:].strip()
+                    if chunk == "[DONE]":
+                        break
+                    try:
+                        delta = json.loads(chunk)["choices"][0].get("delta") or {}
+                    except Exception:
+                        continue
+                    parts.append(delta.get("content") or "")
+                    reasoning.append(delta.get("reasoning_content") or "")
+                    if time.time() - t0 > 600:
+                        raise RuntimeError("script stream exceeded 10 minutes")
+                text = "".join(parts)
                 if "{" not in text:
-                    print("[reel] script reply had no JSON; finish:", r.json()["choices"][0].get("finish_reason"))
-                    text = (msg.get("reasoning_content") or "") + text
+                    text = "".join(reasoning) + text
                 text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
                 m = re.search(r"\{.*\}", text, flags=re.S)
-                data = json.loads(m.group(0))
+                raw = m.group(0)
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:  # common model slips: trailing commas, smart quotes
+                    data = json.loads(re.sub(r",\s*([}\]])", r"\1", raw.replace("\u201c", '"').replace("\u201d", '"')))
                 scenes_out = [s for s in data.get("scenes", []) if str(s.get("narration", "")).strip()]
                 if len(scenes_out) < 2:
                     raise RuntimeError("script had too few scenes")
