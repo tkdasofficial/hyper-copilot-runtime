@@ -201,7 +201,13 @@ def analyze_clip(images: list, req: dict) -> dict:
     overall = round(0.3 * s["subject_match"] + 0.25 * s["semantic_relevance"] + 0.1 * s["object_visibility"]
                     + 0.1 * s["action_context"] + 0.08 * s["shot_suitability"] + 0.1 * s["temporal_consistency"]
                     + 0.07 * s["visual_quality"], 3)
-    ok = (str(j.get("verdict", "")).upper().startswith("ACCEPT") and overall >= ACCEPT_BAR
+    seen = str(j.get("seen", "")).lower()
+    # The analyzer's own description is binding: an astronomy shot it describes as sitting on Earth scenery
+    # (water, shore, sky, cockpit...) is a composite or a wrong object, whatever score it gave.
+    earthly = bool(req.get("space")) and re.search(
+        r"\b(water|ocean|sea|shore|beach|lake|land|desert|snow|sky|cloudy sky|cockpit|room|street|city|people|person|model|toy|globe)\b", seen) \
+        and not re.search(r"\b(water (ice|vapou?r|plumes?)|ice|space|orbit)\b", seen)
+    ok = (not earthly and str(j.get("verdict", "")).upper().startswith("ACCEPT") and overall >= ACCEPT_BAR
           and s["subject_match"] >= 0.6 and s["temporal_consistency"] >= 0.5)
     return {"scores": s, "overall": overall, "accept": ok, "seen": str(j.get("seen", ""))[:120],
             "reason": str(j.get("reason", ""))[:160]}
@@ -214,6 +220,8 @@ def qa_scene(images: list, req: dict) -> dict:
         "You are the final visual QA reviewer of a factual vertical reel. These frames come from ONE rendered scene, "
         "in time order (burned-in captions are expected; ignore them). Decide whether the visuals genuinely support "
         f"the narration.\nSCENE:\n{_req_text(req)}\n\n"
+        "Abstract facts (density, mass, distance, temperature) cannot be filmed literally: a clear real shot of the "
+        "required subject IS valid support; do not fail a scene for not depicting the impossible literally.\n"
         "FAIL when: the required subject is absent, the footage is unrelated/generic/misleading, a Must-NOT item "
         "appears, the frames are black/blank/corrupted, or the scene is a static image that stays irrelevant.\n"
         'Reply with JSON only: {"seen": "<=15 words", "relevance": 0-10, "result": "PASS" or "FAIL", "reason": "<=20 words"}')
