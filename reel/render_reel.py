@@ -137,7 +137,7 @@ def dims(cfg):
 
 
 # ---------------------------------------------------------------- script
-NIM_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b", "meta/llama-3.3-70b-instruct"]  # fallback keeps reels alive during an outage
+NIM_MODELS = ["nvidia/nemotron-3-ultra-550b-a55b", "deepseek-ai/deepseek-v4.1-flash", "nvidia/nemotron-3-super-120b-a12b"]  # fallback keeps reels alive during an outage
 
 
 LANG_RULES = {
@@ -223,7 +223,7 @@ Return JSON:
     key = os.environ.get("NVIDIA_API_KEY", "")
     last_err = None
     for model in NIM_MODELS:
-        for attempt in range(3):
+        for attempt in range(2):  # a stalled model moves on quickly instead of burning 15 minutes
             try:
                 r = requests.post(
                     "https://integrate.api.nvidia.com/v1/chat/completions",
@@ -234,8 +234,12 @@ Return JSON:
                         "temperature": temp,
                         "max_tokens": 16000,
                     },
-                    timeout=300,
+                    timeout=180,
                 )
+                if r.status_code in (404, 410):  # retired model: skip straight to the next one
+                    last_err = RuntimeError(f"NIM {r.status_code}: {r.text[:200]}")
+                    print(f"[reel] {model} retired ({r.status_code}), trying next model")
+                    break
                 if r.status_code >= 400:
                     raise RuntimeError(f"NIM {r.status_code}: {r.text[:300]}")
                 msg = r.json()["choices"][0]["message"]
