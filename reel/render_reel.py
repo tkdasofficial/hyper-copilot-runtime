@@ -736,7 +736,7 @@ ANCHORS: set = set()
 
 # Stock labels that share a name with a sky object but show something else (Saturn V rocket, Mercury thermometer).
 HOMONYMS = {
-    "saturn": ["rocket", "apollo", "launch", "sega", "car", "engine", "gas", "station", "museum", "award", "vehicle"],
+    "saturn": ["rocket", "apollo", "launch", "sega", "car", "engine", "gas", "station", "museum", "award", "vehicle", "store", "shop", "mall", "electronics", "retail"],
     "mercury": ["thermometer", "freddie", "car", "liquid metal", "element"],
     "mars": ["chocolate", "bar", "bruno", "candy"],
     "jupiter": ["florida", "beach", "resort"],
@@ -1231,6 +1231,17 @@ class Planner:
                 if asset is None:
                     raise RuntimeError(f"no usable footage for scene {i + 1} ('{subject}')")
                 asset.setdefault("weak", asset.get("src") != "ai")
+            if strict and asset is not None and asset.get("weak") and (asset.get("score") is None or asset["score"] < 0.4):
+                # Vision says the literal-query clip is off-subject (ice sheet for "Saturn ice"): take a verified
+                # shot of the subject itself from a broad subject pool instead; keep the weak clip only if none.
+                topic = self.cfg["topic"]
+                pool = [f"{topic} planet", f"{topic} rings", f"{topic} space", "planet with rings in space",
+                        "gas giant planet", "solar system planets", "planet orbit space"]
+                alt = select_asset(pool, self.cfg, self._nidx(), f"{topic} planet", claim, used, min_score=0.5,
+                                   exclude=exclude + (asset["id"],), require_anchor=True)
+                if alt is not None and not alt.get("weak"):
+                    USED.discard(asset["id"])
+                    asset = alt
             if asset is not None and asset.get("weak") and (asset.get("score") is None or asset["score"] < 0.4):
                 # Stock only had an unrelated shot (vision: "wind turbine" for Saturn's winds). An exact generated
                 # still of the subject beats a misleading clip; keep the stock clip only if generation fails.
