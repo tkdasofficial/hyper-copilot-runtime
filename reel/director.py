@@ -437,11 +437,12 @@ def requery(req: dict, log: list) -> list:
                          for x in log[-10:]) or "none"
     try:
         j = llm_json("You find real footage in NASA Image & Video Library, Pexels and Pixabay. Reply JSON only.",
-                     f"""Scene needs: {json.dumps({k: req.get(k) for k in ('topic', 'claim', 'visual_objective', 'required_subject', 'required_action', 'must_not')}, ensure_ascii=False)}
+                     f"""Scene needs: {json.dumps({k: req.get(k) for k in ('topic', 'claim', 'visual_objective', 'primary_subject', 'required_subject', 'required_visual_elements', 'prohibited_visual_elements', 'action_or_context', 'must_not')}, ensure_ascii=False)}
 Queries already tried and why the footage was rejected:
 {rejected}
 Write 5 NEW short English search queries (2-5 words) that real libraries would title such footage with (e.g. NASA mission names:
 Cassini, Voyager, Hubble, Juno, JWST; "animation", "flyby", "time-lapse"). Different from the tried ones.
+Avoid any terms in prohibited_visual_elements. Target the primary_subject and required_visual_elements directly.
 {{"queries": ["..."]}}""", temperature=0.4, retries=1, timeout=60)
         tried = {str(x.get("query", "")).lower() for x in log}
         return [q for q in (str(x).strip() for x in j.get("queries") or []) if q and q.lower() not in tried][:5]
